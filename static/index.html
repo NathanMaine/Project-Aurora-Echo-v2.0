@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Meeting Assistant</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #summary {
+            width: 100%;
+            height: 200px;
+            margin-top: 20px;
+        }
+        #actions {
+            margin-top: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Meeting Assistant</h1>
+    <p>Click the button to start recording for 5 seconds, then get a summary and action items.</p>
+    
+    <button id="recordButton">Record & Analyze (5 seconds)</button>
+    
+    <h2>Transcription</h2>
+    <p id="transcription"></p>
+    
+    <h2>Summary</h2>
+    <textarea id="summary" readonly></textarea>
+    
+    <h2>Action Items</h2>
+    <table id="actions">
+        <thead>
+            <tr>
+                <th>Task</th>
+                <th>Assignee</th>
+                <th>Due</th>
+            </tr>
+        </thead>
+        <tbody id="actionsBody">
+        </tbody>
+    </table>
+
+    <script>
+        const recordButton = document.getElementById('recordButton');
+        const transcriptionElement = document.getElementById('transcription');
+        const summaryElement = document.getElementById('summary');
+        const actionsBody = document.getElementById('actionsBody');
+        
+        let mediaRecorder;
+        let audioChunks = [];
+        let ws;
+        
+        // Connect to WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8000/ws');
+            
+            ws.onopen = function(event) {
+                console.log('WebSocket connected');
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    transcriptionElement.textContent = data.transcription || '';
+                    summaryElement.value += (summaryElement.value ? '\n' : '') + (data.summary || '');
+                    
+                    if (data.actions) {
+                        data.actions.forEach(action => {
+                            const row = actionsBody.insertRow();
+                            row.insertCell(0).textContent = action.task || '';
+                            row.insertCell(1).textContent = action.assignee || '';
+                            row.insertCell(2).textContent = action.due || '';
+                        });
+                    }
+                }
+                recordButton.disabled = false;
+                recordButton.textContent = 'Record & Analyze (5 seconds)';
+            };
+            
+            ws.onclose = function(event) {
+                console.log('WebSocket closed');
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        recordButton.addEventListener('click', async () => {
+            console.log('Record button clicked');
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                console.log('Connecting to WebSocket...');
+                connectWebSocket();
+            }
+            
+            try {
+                console.log('Requesting microphone access...');
+                
+                // Check if Web Audio API is available
+                if (!window.AudioContext && !window.webkitAudioContext) {
+                    console.log('Web Audio API not available, using MediaRecorder fallback');
+                    await recordWithMediaRecorder();
+                    return;
+                }
+                
+                const constraints = {
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                };
+                
+                // Try to set sample rate if supported
+                if (navigator.mediaDevices.getSupportedConstraints().sampleRate) {
+                    constraints.audio.sampleRate = 16000;
+                }
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                console.log('Microphone access granted');
+                
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('Audio context created with sample rate:', audioContext.sampleRate);
+                
+                // If the context doesn't match our desired rate, we'll resample
+                const targetSampleRate = 16000;
+                const needsResampling = audioContext.sampleRate !== targetSampleRate;
+                
+                const source = audioContext.createMediaStreamSource(stream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                const audioChunks = [];
+                
+                processor.onaudioprocess = (event) => {
+                    const inputBuffer = event.inputBuffer;
+                    let inputData = inputBuffer.getChannelData(0);
+                    
+                    if (needsResampling) {
+                        // Simple resampling (basic implementation)
+                        const ratio = targetSampleRate / audioContext.sampleRate;
+                        const newLength = Math.floor(inputData.length * ratio);
+                        const resampled = new Float32Array(newLength);
+                        
+                        for (let i = 0; i < newLength; i++) {
+                            const srcIndex = i / ratio;
+                            const srcIndexInt = Math.floor(srcIndex);
+                            const fraction = srcIndex - srcIndexInt;
+                            
+                            if (srcIndexInt < inputData.length - 1) {
+                                resampled[i] = inputData[srcIndexInt] * (1 - fraction) + inputData[srcIndexInt + 1] * fraction;
+                            } else {
+                                resampled[i] = inputData[srcIndexInt];
+                            }
+                        }
+                        inputData = resampled;
+                    }
+                    
+                    audioChunks.push(new Float32Array(inputData));
+                    console.log('Audio chunk received, length:', inputData.length);
+                };
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                recordButton.disabled = true;
+                recordButton.textContent = '🔴 Recording...';
+                
+                setTimeout(() => {
+                    console.log('Recording timeout reached, processing audio...');
+                    source.disconnect();
+                    processor.disconnect();
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    processAudioChunks(audioChunks, targetSampleRate);
+                }, 5000);
+                
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                alert('Error accessing microphone. Please check permissions.');
+                recordButton.disabled = false;
+                recordButton.textContent = 'Record & Analyze (5 seconds)';
+            }
+        });
+        
+        async function recordWithMediaRecorder() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mediaRecorder = new MediaRecorder(stream);
+                const audioChunks = [];
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioBlob.arrayBuffer().then(buffer => {
+                        // For MediaRecorder fallback, we'll send the raw data
+                        // The server will need to handle different formats
+                        const base64Audio = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                        console.log('Sending MediaRecorder audio data, base64 length:', base64Audio.length);
+                        ws.send('audio:' + base64Audio);
+                    });
+                    
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                recordButton.disabled = true;
+                recordButton.textContent = '🔴 Recording...';
+                
+                mediaRecorder.start();
+                setTimeout(() => {
+                    mediaRecorder.stop();
+                    recordButton.textContent = 'Processing...';
+                }, 5000);
+                
+            } catch (error) {
+                console.error('MediaRecorder fallback failed:', error);
+                alert('Recording failed. Please try again.');
+                recordButton.disabled = false;
+                recordButton.textContent = 'Record & Analyze (5 seconds)';
+            }
+        }
+        
+        function processAudioChunks(audioChunks, sampleRate) {
+            // Convert to 16-bit PCM
+            const numChannels = 1;
+            const bitsPerSample = 16;
+            const blockAlign = numChannels * bitsPerSample / 8;
+            const byteRate = sampleRate * blockAlign;
+            
+            // Calculate total length
+            let totalLength = 0;
+            audioChunks.forEach(chunk => totalLength += chunk.length);
+            console.log('Total audio samples:', totalLength);
+            
+            // Create WAV data
+            const wavData = new Int16Array(totalLength);
+            let offset = 0;
+            audioChunks.forEach(chunk => {
+                for (let i = 0; i < chunk.length; i++) {
+                    wavData[offset++] = Math.max(-32768, Math.min(32767, chunk[i] * 32768));
+                }
+            });
+            
+            // Convert to base64
+            const buffer = new ArrayBuffer(44 + wavData.length * 2);
+            const view = new DataView(buffer);
+            
+            // WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+            
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + wavData.length * 2, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitsPerSample, true);
+            writeString(36, 'data');
+            view.setUint32(40, wavData.length * 2, true);
+            
+            // Audio data
+            for (let i = 0; i < wavData.length; i++) {
+                view.setInt16(44 + i * 2, wavData[i], true);
+            }
+            
+            const base64Audio = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+            console.log('Sending audio data, base64 length:', base64Audio.length);
+            ws.send('audio:' + base64Audio);
+            
+            recordButton.textContent = 'Processing...';
+        }
+    </script>
+</body>
+</html>

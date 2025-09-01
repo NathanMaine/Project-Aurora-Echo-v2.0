@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+websockets
+pyaudio==0.2.14
+openai-whisper
+requests
+pyttsx3
+pandas
+numpy
+torch
+torchvision
+python-dotenv
+jinja2
+pyannote.audio
+torchaudio
+
