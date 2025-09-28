@@ -161,5 +161,3 @@ class LLMService:
                 await provider.close()
             except Exception as exc:  # pragma: no cover - runtime logging only
                 LOGGER.warning("Failed to close provider '%s': %s", provider.name, exc)
-
-*** End of File

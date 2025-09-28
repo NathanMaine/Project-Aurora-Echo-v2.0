@@ -1,117 +1,66 @@
-# Async Inference & Workflow Architecture (Planned)
+# Async Inference & Workflow Architecture
 
-> **Status:** Design draft. The workflow described below is not wired into the
-> current FastAPI app yet. See `app.py` and `static/index.html` for the
-> implementation that ships today, and track the private roadmap in
-> `internal_future_plan.md`.
-
-This guide explains the upcoming asynchronous inference pipeline we intend to
-build around `faster-whisper` (ASR) and a local vLLM deployment for LLM
-responses. It also describes how partial results would reach the UI and how
-post-meeting workflows could be triggered once the redesign lands.
+This document describes the asynchronous inference pipeline that powers Project
+Aurora Echo. The goal is to deliver partial transcripts quickly, fail over
+between LLM providers, and keep the FastAPI event loop responsive even when GPU
+workloads spike.
 
 ## Components
 
 - **ASR Service (`services/asr_service.py`)**
-  - Loads `faster-whisper` on the RTX GPU and streams segments through an
-    `asyncio.Queue` so the WebSocket can forward partial transcripts in near
-    real time.
-  - Environment tweaks:
-    - `ASR_MODEL_ID` (default `medium`)
-    - `ASR_LANGUAGE` (optional explicit language)
-
-- **Inference Orchestrator (`services/orchestrator.py`)**
-  - Maintains a background worker queue so inference jobs run off the hot path.
-  - Configurable via `INFERENCE_WORKERS`, `INFERENCE_BATCH_SIZE`, and `ORCHESTRATOR_BACKEND` (label for metrics / future external queues).
-
-- **LLM Service (`services/llm_service.py`)**
-  - Connects to a vLLM server that exposes the OpenAI-compatible
-    `/v1/chat/completions` endpoint. Uses `httpx.AsyncClient` and enforces JSON
-    output via `response_format`.
-  - Environment:
-    - `VLLM_BASE_URL` (default `http://localhost:8001`)
-    - `VLLM_MODEL_ID` (default `meta-llama-3-8b-instruct`)
-    - `VLLM_COMPLETIONS_ENDPOINT` (default `/v1/chat/completions`)
-    - `VLLM_API_KEY` (optional bearer token if the endpoint is secured)
-  - Falls back to xAI Grok if `XAI_API_KEY` is set and the local server fails.
-  - **Provider selection & retries**: control order and robustness with
-    `LLM_PROVIDER_ORDER`, `LLM_MAX_RETRIES`, `LLM_BACKOFF_SECONDS`.
-  - Additional providers: `OPENAI_API_KEY`, `AZURE_OPENAI_*`, `ANTHROPIC_API_KEY`,
-    and `GOOGLE_GEMINI_API_KEY` enable the respective adapters.
-  - **Multi-provider roadmap**: extend this class with additional adapters (OpenAI, Azure OpenAI, Anthropic Claude, Gemini) and select providers at runtime via environment or user preferences.
+  - Wraps `faster-whisper` and streams transcription segments through an
+    `asyncio.Queue` to the main task.
+  - Configurable via env vars: `ASR_MODEL_ID`, `ASR_LANGUAGE`, `ASR_BEAM_SIZE`.
 
 - **Secure Audio Buffer (`services/audio_buffer.py`)**
-  - Keeps PCM chunks in memory and optionally encrypts them with a Fernet key
-    supplied via `AUDIO_ENCRYPTION_KEY`.
-- **NeMo toggle**
-  - Set `NEMO_DIARIZATION_ENABLED=true` to experiment with future NeMo diarization support (currently falls back to pyannote with warnings if the toolkit is unavailable).
+  - Collects PCM chunks in memory while the client is recording.
+  - Optional Fernet encryption via `AUDIO_ENCRYPTION_KEY` ensures captured audio
+    is unreadable at rest.
 
-- **Workflow hooks (`integrations/workflows.py`)**
-  - Currently supports Slack webhooks and JSONL audit logging. Extend this file
-    for ticketing systems, calendar updates, etc.
-  - Environment:
-    - `MEETING_SLACK_WEBHOOK_URL` for Slack notifications
-    - `MEETING_LOG_PATH` for a newline-delimited JSON audit trail
+- **Inference Orchestrator (`services/orchestrator.py`)**
+  - Background worker pool that dequeues `InferenceJob` objects and invokes the
+    shared processor coroutine.
+  - Tuned by `INFERENCE_WORKERS`, `INFERENCE_BATCH_SIZE`, and
+    `ORCHESTRATOR_BACKEND` (used for Prometheus queue depth labels).
 
-- **WebSocket loop (`app.py`)**
-  - Streams PCM chunks, encrypts/stashes them in a secure buffer, and enqueues
-    jobs for the orchestrator.
-  - Emits `partial_transcript` messages as soon as the ASR worker produces
-    segments and relays status updates (`Queued`, `Processing audio`, etc.).
-  - Final responses use the `{"type": "final"}` envelope and include any
-    errors, making it easy for the frontend to distinguish terminal messages.
+- **LLM Service (`services/llm_service.py`)**
+  - Loads provider adapters in priority order from `LLM_PROVIDER_ORDER`.
+  - Supports vLLM (OpenAI-compatible endpoint), xAI Grok, OpenAI, Azure OpenAI,
+    Anthropic Claude, and Google Gemini with shared retry/backoff logic.
+  - Returns payloads validated by `LLMResponseModel` (Pydantic) so downstream
+    code can trust the schema.
 
-## Startup & Shutdown
+- **Workflow Integrations (`integrations/workflows.py`)**
+  - After the final summary is ready, hooks can fan the content out to Slack,
+    JSONL logs, or future integrations (ticketing, calendar, CRM).
 
-- The startup hook preloads faster-whisper, diarization, and LLM clients, then
-  starts the orchestrator workers.
-- Shutdown gracefully stops workers and closes provider clients to release
-  sockets/threads.
+- **Observability (`observability.py`)**
+  - Prometheus counters/histograms capture ASR, diarisation, LLM, and end-to-end
+    latency, job totals/failures, and queue depth.
 
-## GPU Utilisation Notes
+## Lifecycle
+1. WebSocket handler receives `{type:"stop"}` and enqueues an `InferenceJob`.
+2. Worker pulls the job, increments Prometheus counters, and sends a
+   `transcribing` status to the client.
+3. `ASRService.stream_transcription` emits segments asynchronously; each segment
+   is forwarded to the client (`partial_transcript`) and appended to the
+   transcript buffer.
+4. Optional diarisation labels segments with speakers for richer context.
+5. `LLMService.summarize_meeting` iterates over providers until one succeeds,
+   recording LLM latency and raising failure counters when needed.
+6. Final payload is returned to the client, workflow hooks run, and optional TTS
+   plays the summary locally.
+7. Worker records end-to-end duration and completes the job.
 
-- `faster-whisper` selects `compute_type="auto"` on CUDA and `float32` on CPU.
-  Override via `ASR_COMPUTE_TYPE` if you need explicit `float16`/`bfloat16`
-  optimisation.
-- Ensure the NVIDIA driver exposes compute capability ≥ 7.0 for best bfloat16
-  performance with RTX 5000 Ada.
-- Run `nvidia-smi` and monitor utilisation; the ASR thread uses the default
-  executor, so consider pinning it to a dedicated `ThreadPoolExecutor` if you
-  want stricter scheduling.
+## Operational Tips
+- Ensure GPU drivers are installed so `faster-whisper` can run in CUDA mode.
+- Monitor `/metrics` during load tests; increase `INFERENCE_WORKERS` if queue
+  depth grows or latency spikes.
+- Configure fallback providers in `.env` to avoid user-visible failures when the
+  primary endpoint is down.
+- When extending workflows, keep them async to avoid blocking the worker loop.
 
-## Troubleshooting
-
-| Symptom | Likely Cause | Remediation |
-| ------- | ------------ | ----------- |
-| `ASR error: ... is not installed` | `faster-whisper` wheel missing | Re-run `pip install -r requirements.txt` in the GPU-enabled environment. |
-| Partial transcripts never arrive | vLLM/ASR blocking the event loop | Confirm the `partial_transcript` messages appear in DevTools → WS. If not, check server logs for ASR exceptions. |
-| Final message reports `Failed to get LLM response.` | vLLM endpoint down or wrong URL | Verify `VLLM_BASE_URL` and that `curl` to `/v1/models` succeeds. The server will fall back to Grok only if `XAI_API_KEY` is configured. |
-| Slack notifications missing | Webhook not set or HTTP error | Set `MEETING_SLACK_WEBHOOK_URL`. Review server logs for `Slack notification failed`. |
-| Speaker labels absent | `HF_TOKEN` unset or diarization GPU OOM | Provide a Hugging Face token and consider reducing ASR model size if VRAM is tight. |
-| `Audio decryption failed` | Incorrect `AUDIO_ENCRYPTION_KEY` | Regenerate the key (Fernet) and restart the server so buffers can be decrypted. |
-
-## Extending Workflows & Providers
-
-- Add calendar scheduling: create an async function in `integrations/workflows`
-  that calls your calendar API and trigger it from `run_post_meeting_workflows`.
-- Ticketing systems: convert the `actions` list into issue payloads (Jira,
-  Linear, etc.) and batch them with `httpx.AsyncClient`.
-- Additional LLM providers: create subclasses of `LLMService` or inject a
-  strategy object that handles provider-specific payloads and schema validation.
-
-## External Orchestration (Roadmap)
-- Increase `INFERENCE_WORKERS` and `INFERENCE_BATCH_SIZE` to scale within a
-  single process.
-- `ORCHESTRATOR_BACKEND` currently labels metrics; future versions can map this
-  to FastStream/Redis-based dispatchers that serialize `InferenceJob` payloads
-  for GPU worker fleets.
-- Remote workers can reuse `process_audio_session` and push `final` WebSocket
-  payloads back via a callback channel (HTTP/WebSocket/FastStream).
-
-## Metrics & Observability
-- Prometheus metrics are exposed at `/metrics` (see `observability.py`).
-- Key series: `meeting_assistant_inference_queue_depth`, latency histograms for ASR/LLM/diarization, job totals/failures.
-- Scrape the endpoint with Prometheus/Grafana and alert on sustained queue growth or elevated failure counts.
-
-Keep this file aligned with future service changes so operators understand how
-to configure and debug the assistant.
+## Future Enhancements
+- Streaming partial diarisation updates to the UI.
+- Extending the orchestrator to use Redis / FastStream for multi-node GPU farms.
+- Adding tracing (OpenTelemetry) to correlate jobs across components.

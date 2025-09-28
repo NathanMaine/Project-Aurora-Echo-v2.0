@@ -3,9 +3,10 @@ uvicorn[standard]
 websockets
 pyaudio==0.2.14
 openai-whisper
+faster-whisper
+httpx
 requests
 pyttsx3
-pandas
 numpy
 torch
 torchvision
@@ -13,4 +14,6 @@ python-dotenv
 jinja2
 pyannote.audio
 torchaudio
-
+cryptography
+prometheus-client
+pydantic

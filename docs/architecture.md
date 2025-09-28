@@ -1,41 +1,53 @@
-# Current Architecture Overview
+# Architecture Overview
 
-Project Aurora Echo is a FastAPI application that serves a lightweight browser client. The flow today is intentionally linear while we stage larger asynchronous upgrades.
+Project Aurora Echo couples a FastAPI backend with a lightweight browser client
+that streams PCM audio over WebSockets. Audio ingestion, transcription, and LLM
+summarisation are decoupled via an asynchronous orchestration layer.
 
-## High-Level Flow
-1. User clicks **Record & Analyze** on the web UI.
-2. Browser records five seconds of mono audio, converts it to a base64 WAV string, and sends it over a WebSocket text frame (`static/index.html`).
-3. The server saves the audio to a temporary file, loads the Whisper `base` model (CUDA if available), and transcribes the clip (`app.py`).
-4. If a `HF_TOKEN` is configured, pyannote diarisation annotates segments with speaker labels.
-5. The diarised transcript is sent to xAI Grok (`grok-3`) with a prompt that asks for a JSON summary plus action items.
-6. The JSON response becomes the payload returned to the WebSocket client and, optionally, voiced via `pyttsx3`.
+## Request Flow
+1. The browser sends `{type:"start"}` to open a session, then streams `Int16`
+   PCM frames. After the five-second capture window it sends `{type:"stop"}`.
+2. `SecureAudioBuffer` accumulates PCM chunks (optionally encrypting them with a
+   Fernet key) until the session ends.
+3. An `InferenceOrchestrator` enqueues the job and dispatches it to worker tasks.
+4. `ASRService` (backed by `faster-whisper`) streams transcription segments. Each
+   segment is forwarded to the client as a `partial_transcript` event while ASR
+   latency is recorded in Prometheus.
+5. If `HF_TOKEN` is configured, the diarisation pipeline annotates segments with
+   speaker labels. Failures fall back to the raw transcript and are logged.
+6. `LLMService` calls providers in priority order (vLLM → Grok → OpenAI/Azure →
+   Anthropic → Gemini), returning structured JSON validated by Pydantic models.
+7. Final results (`summary`, `actions`) are sent back to the client as a `final`
+   event and Prometheus job counters/histograms are updated. Optional TTS plays
+   the summary locally via `pyttsx3`.
 
-## Components in Use
-- **FastAPI + WebSockets** – API surface and transport.
-- **Whisper (openai-whisper)** – transcription of the short audio clip.
-- **pyannote.audio** – optional speaker diarisation when the token is provided.
-- **xAI Grok API** – meeting summary and action item extraction.
-- **pyttsx3** – optional text-to-speech feedback on the host machine.
+## Key Components
+- **`app.py`** – FastAPI app, WebSocket handler, startup/shutdown wiring, and
+  Prometheus endpoint.
+- **`services/asr_service.py`** – `faster-whisper` wrapper supporting async
+  streaming with configurable model size and device.
+- **`services/orchestrator.py`** – asyncio worker queue with batching, backend
+  labelling, and graceful shutdown logic.
+- **`services/llm_service.py`** – provider registry + retry/backoff logic calling
+  vLLM, Grok, OpenAI, Azure OpenAI, Anthropic Claude, and Gemini adapters.
+- **`services/audio_buffer.py`** – in-memory PCM accumulator with optional
+  Fernet encryption/decryption.
+- **`integrations/workflows.py`** – post-meeting hooks (Slack webhook + JSONL log)
+  ready for expansion.
+- **`observability.py`** – Prometheus counters/histograms shared across modules.
 
-## Components Under Development
-The repository already contains scaffolding for the next iteration (see `services/` and `docs/*upgrade.md`). These modules are design work and are not connected to the runtime yet.
+## Deployment Options
+- **Local development** – run `uvicorn app:app --reload` and optionally launch a
+  local vLLM container on port 8001.
+- **Docker Compose** – builds the API image, Traefik reverse proxy, observability
+  stack, and a managed vLLM service (via profile `model`).
 
-- `services/asr_service.py`: async streaming ASR via `faster-whisper`.
-- `services/llm_service.py`: multi-provider LLM orchestration with retries.
-- `services/orchestrator.py`: background inference queue and batching support.
-- `integrations/workflows.py`: hooks for Slack webhooks and audit logs.
-- `observability.py`: Prometheus metrics definitions.
+## Extensibility Notes
+- Increase `INFERENCE_WORKERS` and `INFERENCE_BATCH_SIZE` to improve throughput.
+- Swap `LLM_PROVIDER_ORDER` at runtime to prioritise different providers.
+- Extend `integrations/workflows.py` for ticketing, calendar updates, etc.
+- Expose additional metrics or tracing by augmenting `observability.py`.
 
-These will replace the in-process workflow once the async pipeline is implemented.
-
-## Deployment Today
-- Run locally with `python app.py` or `uvicorn` for development.
-- Docker Compose builds the API container and optionally starts Traefik, Prometheus, and a placeholder vLLM service (future work).
-
-## Known Limitations
-- Audio upload relies on temporary files and base64 transport, which adds overhead.
-- Only Grok is called; provider failover is not enabled yet.
-- No Prometheus metrics are published by the live app.
-- TTS runs synchronously and can block the event loop during long summaries.
-
-Refer to `internal_future_plan.md` for the private roadmap and `docs/async-inference-service.md` for the planned async design (labelled as future work).
+Refer to `docs/async-inference-service.md` and
+`docs/streaming-transport-upgrade.md` for deeper dives into the inference and
+transport layers.

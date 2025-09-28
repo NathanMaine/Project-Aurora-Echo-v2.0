@@ -3,50 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Meeting Assistant</title>
+    <title>Project Aurora Echo</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 24px;
         }
         button {
             background-color: #4CAF50;
             border: none;
             color: white;
-            padding: 15px 32px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
+            padding: 14px 28px;
             font-size: 16px;
-            margin: 4px 2px;
+            border-radius: 6px;
             cursor: pointer;
-            border-radius: 4px;
-        }
-        button:hover {
-            background-color: #45a049;
         }
         button:disabled {
-            background-color: #cccccc;
+            background-color: #9ac69b;
             cursor: not-allowed;
         }
-        #summary {
-            width: 100%;
-            height: 200px;
-            margin-top: 20px;
+        #status {
+            margin-top: 12px;
+            font-style: italic;
+            color: #444;
         }
-        #actions {
-            margin-top: 20px;
+        textarea {
+            width: 100%;
+            min-height: 160px;
+            margin-top: 12px;
         }
         table {
             width: 100%;
             border-collapse: collapse;
+            margin-top: 16px;
         }
         th, td {
-            border: 1px solid #ddd;
             padding: 8px;
-            text-align: left;
+            border: 1px solid #ddd;
         }
         th {
             background-color: #f2f2f2;
@@ -54,19 +49,19 @@
     </style>
 </head>
 <body>
-    <h1>AI Meeting Assistant</h1>
-    <p>Click the button to start recording for 5 seconds, then get a summary and action items.</p>
-    
-    <button id="recordButton">Record & Analyze (5 seconds)</button>
-    
-    <h2>Transcription</h2>
+    <h1>Project Aurora Echo</h1>
+    <p>Capture a five-second snippet, transcribe it in real time, and receive a structured summary with action items.</p>
+    <button id="recordButton">Record &amp; Analyze</button>
+    <div id="status">Status: idle</div>
+
+    <h2>Live Transcript</h2>
     <p id="transcription"></p>
-    
+
     <h2>Summary</h2>
     <textarea id="summary" readonly></textarea>
-    
+
     <h2>Action Items</h2>
-    <table id="actions">
+    <table>
         <thead>
             <tr>
                 <th>Task</th>
@@ -74,251 +69,189 @@
                 <th>Due</th>
             </tr>
         </thead>
-        <tbody id="actionsBody">
-        </tbody>
+        <tbody id="actionsBody"></tbody>
     </table>
 
     <script>
         const recordButton = document.getElementById('recordButton');
+        const statusElement = document.getElementById('status');
         const transcriptionElement = document.getElementById('transcription');
         const summaryElement = document.getElementById('summary');
         const actionsBody = document.getElementById('actionsBody');
-        
-        let mediaRecorder;
-        let audioChunks = [];
+
+        const TARGET_SAMPLE_RATE = 16000;
+        const RECORDING_DURATION_MS = 5000;
+
         let ws;
-        
-        // Connect to WebSocket
-        function connectWebSocket() {
-            ws = new WebSocket('ws://localhost:8000/ws');
-            
-            ws.onopen = function(event) {
-                console.log('WebSocket connected');
-            };
-            
-            ws.onmessage = function(event) {
+        let audioContext;
+        let processorNode;
+        let sourceNode;
+        let recordingTimeout;
+
+        function updateStatus(message) {
+            statusElement.textContent = `Status: ${message}`;
+        }
+
+        function ensureWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                return ws;
+            }
+            ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => updateStatus('connected');
+            ws.onclose = () => updateStatus('disconnected');
+            ws.onerror = (err) => console.error('WebSocket error', err);
+            ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                } else {
-                    transcriptionElement.textContent = data.transcription || '';
-                    summaryElement.value += (summaryElement.value ? '\n' : '') + (data.summary || '');
-                    
-                    if (data.actions) {
-                        data.actions.forEach(action => {
+                if (data.type === 'status') {
+                    updateStatus(data.status || 'processing');
+                } else if (data.type === 'partial_transcript') {
+                    transcriptionElement.textContent += `${data.text}\n`;
+                } else if (data.type === 'final') {
+                    if (data.error) {
+                        alert(data.error);
+                    } else {
+                        summaryElement.value = data.summary || '';
+                        actionsBody.innerHTML = '';
+                        (data.actions || []).forEach((action) => {
                             const row = actionsBody.insertRow();
                             row.insertCell(0).textContent = action.task || '';
                             row.insertCell(1).textContent = action.assignee || '';
                             row.insertCell(2).textContent = action.due || '';
                         });
                     }
+                    recordButton.disabled = false;
+                    recordButton.textContent = 'Record & Analyze';
+                    if (!data.error) {
+                        updateStatus('complete');
+                    }
                 }
-                recordButton.disabled = false;
-                recordButton.textContent = 'Record & Analyze (5 seconds)';
             };
-            
-            ws.onclose = function(event) {
-                console.log('WebSocket closed');
-            };
-            
-            ws.onerror = function(error) {
-                console.error('WebSocket error:', error);
-            };
+            return ws;
         }
-        
-        recordButton.addEventListener('click', async () => {
-            console.log('Record button clicked');
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                console.log('Connecting to WebSocket...');
-                connectWebSocket();
+
+        function waitForSocketOpen(socket) {
+            if (socket.readyState === WebSocket.OPEN) {
+                return Promise.resolve();
             }
-            
+            return new Promise((resolve, reject) => {
+                const handleOpen = () => {
+                    socket.removeEventListener('close', handleClose);
+                    resolve();
+                };
+                const handleClose = () => {
+                    socket.removeEventListener('open', handleOpen);
+                    reject(new Error('WebSocket closed before opening'));
+                };
+                socket.addEventListener('open', handleOpen, { once: true });
+                socket.addEventListener('close', handleClose, { once: true });
+            });
+        }
+
+        function clearResults() {
+            transcriptionElement.textContent = '';
+            summaryElement.value = '';
+            actionsBody.innerHTML = '';
+        }
+
+        async function startRecording() {
+            const socket = ensureWebSocket();
+            clearResults();
+            recordButton.disabled = true;
+            recordButton.textContent = 'Recording...';
+            updateStatus('requesting microphone');
+
             try {
-                console.log('Requesting microphone access...');
-                
-                // Check if Web Audio API is available
-                if (!window.AudioContext && !window.webkitAudioContext) {
-                    console.log('Web Audio API not available, using MediaRecorder fallback');
-                    await recordWithMediaRecorder();
-                    return;
-                }
-                
-                const constraints = {
+                const stream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         channelCount: 1,
                         echoCancellation: true,
-                        noiseSuppression: true
-                    }
-                };
-                
-                // Try to set sample rate if supported
-                if (navigator.mediaDevices.getSupportedConstraints().sampleRate) {
-                    constraints.audio.sampleRate = 16000;
-                }
-                
-                const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('Microphone access granted');
-                
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.log('Audio context created with sample rate:', audioContext.sampleRate);
-                
-                // If the context doesn't match our desired rate, we'll resample
-                const targetSampleRate = 16000;
-                const needsResampling = audioContext.sampleRate !== targetSampleRate;
-                
-                const source = audioContext.createMediaStreamSource(stream);
-                const processor = audioContext.createScriptProcessor(4096, 1, 1);
-                
-                const audioChunks = [];
-                
-                processor.onaudioprocess = (event) => {
-                    const inputBuffer = event.inputBuffer;
-                    let inputData = inputBuffer.getChannelData(0);
-                    
-                    if (needsResampling) {
-                        // Simple resampling (basic implementation)
-                        const ratio = targetSampleRate / audioContext.sampleRate;
+                        noiseSuppression: true,
+                    },
+                });
+
+                await waitForSocketOpen(socket);
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                sourceNode = audioContext.createMediaStreamSource(stream);
+                processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+                socket.send(JSON.stringify({ type: 'start', sampleRate: TARGET_SAMPLE_RATE }));
+                updateStatus('recording');
+
+                processorNode.onaudioprocess = (event) => {
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    let pcmData;
+
+                    if (audioContext.sampleRate !== TARGET_SAMPLE_RATE) {
+                        const ratio = TARGET_SAMPLE_RATE / audioContext.sampleRate;
                         const newLength = Math.floor(inputData.length * ratio);
                         const resampled = new Float32Array(newLength);
-                        
                         for (let i = 0; i < newLength; i++) {
-                            const srcIndex = i / ratio;
-                            const srcIndexInt = Math.floor(srcIndex);
-                            const fraction = srcIndex - srcIndexInt;
-                            
-                            if (srcIndexInt < inputData.length - 1) {
-                                resampled[i] = inputData[srcIndexInt] * (1 - fraction) + inputData[srcIndexInt + 1] * fraction;
-                            } else {
-                                resampled[i] = inputData[srcIndexInt];
-                            }
+                            const sourceIndex = i / ratio;
+                            const lowerIndex = Math.floor(sourceIndex);
+                            const upperIndex = Math.min(lowerIndex + 1, inputData.length - 1);
+                            const weight = sourceIndex - lowerIndex;
+                            resampled[i] = inputData[lowerIndex] * (1 - weight) + inputData[upperIndex] * weight;
                         }
-                        inputData = resampled;
+                        pcmData = resampled;
+                    } else {
+                        pcmData = inputData;
                     }
-                    
-                    audioChunks.push(new Float32Array(inputData));
-                    console.log('Audio chunk received, length:', inputData.length);
+
+                    const int16Buffer = new Int16Array(pcmData.length);
+                    for (let i = 0; i < pcmData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, pcmData[i]));
+                        int16Buffer[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                    }
+
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(int16Buffer.buffer);
+                    }
                 };
-                
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-                
-                recordButton.disabled = true;
-                recordButton.textContent = '🔴 Recording...';
-                
-                setTimeout(() => {
-                    console.log('Recording timeout reached, processing audio...');
-                    source.disconnect();
-                    processor.disconnect();
-                    stream.getTracks().forEach(track => track.stop());
-                    
-                    processAudioChunks(audioChunks, targetSampleRate);
-                }, 5000);
-                
+
+                sourceNode.connect(processorNode);
+                processorNode.connect(audioContext.destination);
+
+                recordingTimeout = setTimeout(() => stopRecording(stream), RECORDING_DURATION_MS);
             } catch (error) {
-                console.error('Error accessing microphone:', error);
-                alert('Error accessing microphone. Please check permissions.');
+                console.error('Microphone error', error);
+                alert('Unable to access the microphone. Please check your permissions.');
                 recordButton.disabled = false;
-                recordButton.textContent = 'Record & Analyze (5 seconds)';
-            }
-        });
-        
-        async function recordWithMediaRecorder() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                const mediaRecorder = new MediaRecorder(stream);
-                const audioChunks = [];
-                
-                mediaRecorder.ondataavailable = event => {
-                    audioChunks.push(event.data);
-                };
-                
-                mediaRecorder.onstop = () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                    audioBlob.arrayBuffer().then(buffer => {
-                        // For MediaRecorder fallback, we'll send the raw data
-                        // The server will need to handle different formats
-                        const base64Audio = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-                        console.log('Sending MediaRecorder audio data, base64 length:', base64Audio.length);
-                        ws.send('audio:' + base64Audio);
-                    });
-                    
-                    stream.getTracks().forEach(track => track.stop());
-                };
-                
-                recordButton.disabled = true;
-                recordButton.textContent = '🔴 Recording...';
-                
-                mediaRecorder.start();
-                setTimeout(() => {
-                    mediaRecorder.stop();
-                    recordButton.textContent = 'Processing...';
-                }, 5000);
-                
-            } catch (error) {
-                console.error('MediaRecorder fallback failed:', error);
-                alert('Recording failed. Please try again.');
-                recordButton.disabled = false;
-                recordButton.textContent = 'Record & Analyze (5 seconds)';
+                recordButton.textContent = 'Record & Analyze';
+                updateStatus('error');
             }
         }
-        
-        function processAudioChunks(audioChunks, sampleRate) {
-            // Convert to 16-bit PCM
-            const numChannels = 1;
-            const bitsPerSample = 16;
-            const blockAlign = numChannels * bitsPerSample / 8;
-            const byteRate = sampleRate * blockAlign;
-            
-            // Calculate total length
-            let totalLength = 0;
-            audioChunks.forEach(chunk => totalLength += chunk.length);
-            console.log('Total audio samples:', totalLength);
-            
-            // Create WAV data
-            const wavData = new Int16Array(totalLength);
-            let offset = 0;
-            audioChunks.forEach(chunk => {
-                for (let i = 0; i < chunk.length; i++) {
-                    wavData[offset++] = Math.max(-32768, Math.min(32767, chunk[i] * 32768));
-                }
-            });
-            
-            // Convert to base64
-            const buffer = new ArrayBuffer(44 + wavData.length * 2);
-            const view = new DataView(buffer);
-            
-            // WAV header
-            const writeString = (offset, string) => {
-                for (let i = 0; i < string.length; i++) {
-                    view.setUint8(offset + i, string.charCodeAt(i));
-                }
-            };
-            
-            writeString(0, 'RIFF');
-            view.setUint32(4, 36 + wavData.length * 2, true);
-            writeString(8, 'WAVE');
-            writeString(12, 'fmt ');
-            view.setUint32(16, 16, true);
-            view.setUint16(20, 1, true);
-            view.setUint16(22, numChannels, true);
-            view.setUint32(24, sampleRate, true);
-            view.setUint32(28, byteRate, true);
-            view.setUint16(32, blockAlign, true);
-            view.setUint16(34, bitsPerSample, true);
-            writeString(36, 'data');
-            view.setUint32(40, wavData.length * 2, true);
-            
-            // Audio data
-            for (let i = 0; i < wavData.length; i++) {
-                view.setInt16(44 + i * 2, wavData[i], true);
+
+        function stopRecording(stream) {
+            if (recordingTimeout) {
+                clearTimeout(recordingTimeout);
+                recordingTimeout = null;
             }
-            
-            const base64Audio = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-            console.log('Sending audio data, base64 length:', base64Audio.length);
-            ws.send('audio:' + base64Audio);
-            
+            if (processorNode && sourceNode) {
+                processorNode.disconnect();
+                sourceNode.disconnect();
+            }
+            processorNode = null;
+            sourceNode = null;
+            if (stream) {
+                stream.getTracks().forEach((track) => track.stop());
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
             recordButton.textContent = 'Processing...';
+            updateStatus('uploading');
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'stop' }));
+            }
         }
+
+        recordButton.addEventListener('click', () => {
+            startRecording();
+        });
     </script>
 </body>
 </html>
