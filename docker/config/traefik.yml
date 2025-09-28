@@ -1,0 +1,39 @@
+http:
+  middlewares:
+    https-redirect:
+      redirectScheme:
+        scheme: https
+    auth:
+      basicAuth:
+        users:
+          - "family:$apr1$e2j5Hn9K$skn.pzG0LcKk6.B6B1cNQ/" # password: welcome123
+
+  routers:
+    api-http:
+      entryPoints: ["web"]
+      rule: "PathPrefix(`/`)"
+      middlewares: ["https-redirect"]
+      service: noop@internal
+
+    api-https:
+      entryPoints: ["websecure"]
+      rule: "PathPrefix(`/`)"
+      service: api-service
+      middlewares: ["auth"]
+      tls:
+        options: default
+
+  services:
+    api-service:
+      loadBalancer:
+        servers:
+          - url: "http://meeting-assistant-api:8000"
+
+tls:
+  certificates:
+    - certFile: /certs/lan.crt
+      keyFile: /certs/lan.key
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: false
