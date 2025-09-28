@@ -1,4 +1,9 @@
-# Autonomous Build Instructions
+# Autonomous Build Instructions (Living Document)
+
+> **Reminder:** Several checklist items below describe planned functionality.
+> Confirm the current codebase before assuming any feature labelled "DONE" is
+> available in production. Use `README.md` and `internal_future_plan.md` for the
+> authoritative snapshot of what ships today.
 
 This document guides an automated AI engineer ("builder agent") through setting up,
 verifying, and extending the Real-Time AI Meeting Assistant. Follow the numbered

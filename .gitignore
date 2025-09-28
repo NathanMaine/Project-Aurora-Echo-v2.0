@@ -53,3 +53,6 @@ logs/
 # Node modules (if any)
 node_modules/
 .env
+
+# Internal planning
+internal_future_plan.md

@@ -1,35 +1,41 @@
-# Architecture of Real-Time AI Meeting Assistant
+# Current Architecture Overview
 
-## System Overview
-The Real-Time AI Meeting Assistant is a Streamlit application designed to transcribe audio, summarize meetings, and extract action items using the xAI Grok API.
+Project Aurora Echo is a FastAPI application that serves a lightweight browser client. The flow today is intentionally linear while we stage larger asynchronous upgrades.
 
-## Components
-- **User Interface**: Built with FastAPI and WebSockets, providing a web-based interface for recording and viewing results.
-- **Audio Capture**: Uses PyAudio to record 5-second audio clips from the default microphone, saved as a temporary WAV or WebM file.
-- **Transcription**: Employs the Whisper model (cached) to convert audio to text with timestamps, optimized for GPU if available.
-- **Speaker Diarization**: Uses pyannote.audio to identify speakers in the audio, assigning labels to transcribed segments.
-- **LLM Processing**: Queries the xAI Grok API ("grok-3" model) with a structured prompt to generate JSON responses containing summaries and actions, considering speaker context.
-- **Text-to-Speech**: Utilizes pyttsx3 to provide audible feedback.
-- **Data Storage**: Maintains session state with a summary string and an actions DataFrame.
+## High-Level Flow
+1. User clicks **Record & Analyze** on the web UI.
+2. Browser records five seconds of mono audio, converts it to a base64 WAV string, and sends it over a WebSocket text frame (`static/index.html`).
+3. The server saves the audio to a temporary file, loads the Whisper `base` model (CUDA if available), and transcribes the clip (`app.py`).
+4. If a `HF_TOKEN` is configured, pyannote diarisation annotates segments with speaker labels.
+5. The diarised transcript is sent to xAI Grok (`grok-3`) with a prompt that asks for a JSON summary plus action items.
+6. The JSON response becomes the payload returned to the WebSocket client and, optionally, voiced via `pyttsx3`.
 
-## Data Flow
-1. User clicks "Record & Analyze" to start a 5-second recording.
-2. PyAudio captures audio and saves it to `temp_audio.wav` or `temp_audio.webm`.
-3. Whisper transcribes the audio into text with timestamps.
-4. pyannote.audio performs speaker diarization to identify speakers.
-5. Transcribed segments are labeled with speakers.
-6. The diarized text is sent to the xAI API via a POST request.
-7. The API response (JSON) is parsed and used to update the UI and speak the summary.
-8. Actions are stored in a DataFrame for display.
+## Components in Use
+- **FastAPI + WebSockets** – API surface and transport.
+- **Whisper (openai-whisper)** – transcription of the short audio clip.
+- **pyannote.audio** – optional speaker diarisation when the token is provided.
+- **xAI Grok API** – meeting summary and action item extraction.
+- **pyttsx3** – optional text-to-speech feedback on the host machine.
 
-## Technology Stack
-- **Frontend**: FastAPI with WebSockets, HTML/CSS/JavaScript
-- **Audio**: PyAudio, wave, torchaudio
-- **AI**: Whisper (via openai-whisper), pyannote.audio for diarization, xAI Grok API
-- **TTS**: pyttsx3
-- **Data**: pandas, numpy
-- **Environment**: Python 3.10+, torch (for GPU)
+## Components Under Development
+The repository already contains scaffolding for the next iteration (see `services/` and `docs/*upgrade.md`). These modules are design work and are not connected to the runtime yet.
 
-## Scalability and Limitations
-- Current design is single-user and sequential, limiting real-time performance.
-- Future enhancements could include live streaming and multi-user support.
+- `services/asr_service.py`: async streaming ASR via `faster-whisper`.
+- `services/llm_service.py`: multi-provider LLM orchestration with retries.
+- `services/orchestrator.py`: background inference queue and batching support.
+- `integrations/workflows.py`: hooks for Slack webhooks and audit logs.
+- `observability.py`: Prometheus metrics definitions.
+
+These will replace the in-process workflow once the async pipeline is implemented.
+
+## Deployment Today
+- Run locally with `python app.py` or `uvicorn` for development.
+- Docker Compose builds the API container and optionally starts Traefik, Prometheus, and a placeholder vLLM service (future work).
+
+## Known Limitations
+- Audio upload relies on temporary files and base64 transport, which adds overhead.
+- Only Grok is called; provider failover is not enabled yet.
+- No Prometheus metrics are published by the live app.
+- TTS runs synchronously and can block the event loop during long summaries.
+
+Refer to `internal_future_plan.md` for the private roadmap and `docs/async-inference-service.md` for the planned async design (labelled as future work).

@@ -1,9 +1,14 @@
-# Async Inference & Workflow Architecture
+# Async Inference & Workflow Architecture (Planned)
 
-This guide explains the new asynchronous inference pipeline built around
-`faster-whisper` (ASR) and a local vLLM deployment for LLM responses. It also
-describes how partial results reach the UI and how post-meeting workflows are
-triggered.
+> **Status:** Design draft. The workflow described below is not wired into the
+> current FastAPI app yet. See `app.py` and `static/index.html` for the
+> implementation that ships today, and track the private roadmap in
+> `internal_future_plan.md`.
+
+This guide explains the upcoming asynchronous inference pipeline we intend to
+build around `faster-whisper` (ASR) and a local vLLM deployment for LLM
+responses. It also describes how partial results would reach the UI and how
+post-meeting workflows could be triggered once the redesign lands.
 
 ## Components
 

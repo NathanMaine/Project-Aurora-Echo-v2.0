@@ -1,6 +1,13 @@
-# Binary WebSocket Audio Streaming Upgrade
+# Binary WebSocket Audio Streaming Upgrade (Planned)
 
-This document explains the switch from base64 WAV transport to binary PCM streaming, how the new client–server contract works, and how to troubleshoot the updated pipeline. Use it as a reference when deploying or debugging the real-time meeting assistant.
+> **Status:** Design draft. The live client/server still use base64 WAV payloads
+> and the legacy WebSocket handler in `app.py`. Treat this file as guidance for
+> the future transport upgrade.
+
+This document explains the intended switch from base64 WAV transport to binary
+PCM streaming, how the new client–server contract will work, and how to
+troubleshoot the updated pipeline once it is implemented. Use it as a reference
+when preparing the upcoming release of the real-time meeting assistant.
 
 ## What Changed
 - **Binary frames instead of base64 text**: The browser now sends raw `Int16` PCM buffers over the WebSocket, removing temp-file writes and base64 expansion (`static/index.html:81-256`).
