@@ -1,4 +1,4 @@
-# Project Aurora Echo
+# Project Aurora Echo POC
 
 AI meeting copilot that streams audio from the browser, transcribes it with
 `faster-whisper`, diarises speakers with `pyannote.audio`, and produces a
