@@ -11,10 +11,10 @@ import torch
 
 try:
     from faster_whisper import WhisperModel
-except ImportError as exc:  # pragma: no cover - handled at runtime
-    raise RuntimeError(
-        "faster-whisper is required for ASRService. Install it via requirements.txt."
-    ) from exc
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+    WhisperModel = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,11 @@ class ASRService:
         beam_size: int = 5,
         language: Optional[str] = None,
     ) -> None:
+        if not FASTER_WHISPER_AVAILABLE:
+            raise RuntimeError(
+                "faster-whisper is required for ASRService. Install it via: pip install faster-whisper"
+            )
+        
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._compute_type = compute_type or ("auto" if self._device == "cuda" else "float32")
         LOGGER.info(

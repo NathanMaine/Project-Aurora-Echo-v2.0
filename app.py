@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torchaudio
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +23,12 @@ from observability import (
     INFERENCE_JOBS_TOTAL,
     LLM_LATENCY,
 )
-from services import ASRService, InferenceJob, InferenceOrchestrator, LLMService
+from services import InferenceJob, InferenceOrchestrator, LLMService
+try:
+    from services import ASRService
+except ImportError:
+    ASRService = None
+    print("Warning: ASRService not available - running in limited mode")
 from services.audio_buffer import SecureAudioBuffer
 
 load_dotenv()
@@ -34,14 +40,53 @@ MODEL_RATE = 16000
 AUDIO_ENCRYPTION_KEY = os.getenv("AUDIO_ENCRYPTION_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-asr_service: Optional[ASRService] = None
+asr_service: Optional["ASRService"] = None
 llm_service: Optional[LLMService] = None
 orchestrator: Optional[InferenceOrchestrator] = None
 diarization_pipeline = None
 tts_engine = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global asr_service, llm_service, orchestrator
+
+    try:
+        # Try to create ASR service to test if dependencies are available
+        test_asr = ASRService()
+        asr_service = test_asr
+        LOGGER.info("ASR service initialized successfully")
+    except RuntimeError as e:
+        asr_service = None
+        LOGGER.warning("ASR service not available: %s", e)
+        LOGGER.warning("Running without speech recognition capabilities")
+
+    llm_service = LLMService()
+
+    orchestrator = InferenceOrchestrator(
+        processor=_process_job,
+        workers=int(os.getenv("INFERENCE_WORKERS", "2")),
+        backend_name=os.getenv("ORCHESTRATOR_BACKEND", "in-memory"),
+        batch_size=int(os.getenv("INFERENCE_BATCH_SIZE", "1")),
+    )
+    await orchestrator.start()
+    LOGGER.info("Aurora Echo startup complete")
+
+    yield
+
+    if orchestrator:
+        await orchestrator.stop()
+    if llm_service:
+        await llm_service.close()
+    LOGGER.info("Aurora Echo shutdown complete")
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Debug: print registered routes
+for route in app.routes:
+    print(f"Route: {route.path} - {type(route).__name__}")
 
 
 def get_diarization_pipeline():
@@ -187,43 +232,16 @@ async def _apply_diarization(
         return fallback
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
-    global asr_service, llm_service, orchestrator
-
-    asr_service = ASRService(
-        model_size=os.getenv("ASR_MODEL_ID", "medium"),
-        language=os.getenv("ASR_LANGUAGE"),
-        beam_size=int(os.getenv("ASR_BEAM_SIZE", "5")),
-    )
-
-    llm_service = LLMService()
-
-    orchestrator = InferenceOrchestrator(
-        processor=_process_job,
-        workers=int(os.getenv("INFERENCE_WORKERS", "2")),
-        backend_name=os.getenv("ORCHESTRATOR_BACKEND", "in-memory"),
-        batch_size=int(os.getenv("INFERENCE_BATCH_SIZE", "1")),
-    )
-    await orchestrator.start()
-    LOGGER.info("Aurora Echo startup complete")
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    if orchestrator:
-        await orchestrator.stop()
-    if llm_service:
-        await llm_service.close()
-    LOGGER.info("Aurora Echo shutdown complete")
-
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    LOGGER.info("WebSocket connection attempt received")
     if orchestrator is None:
+        LOGGER.warning("WebSocket rejected: orchestrator not initialized")
         await websocket.close(code=1011)
         return
 
+    LOGGER.info("WebSocket connection accepted")
     await websocket.accept()
     buffer = SecureAudioBuffer(encryption_key=AUDIO_ENCRYPTION_KEY)
     current_sample_rate = MODEL_RATE
@@ -268,12 +286,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
 
 
-@app.get("/", response_class=HTMLResponse)
-async def root() -> str:
-    with open("static/index.html", "r", encoding="utf-8") as handle:
-        return handle.read()
+@app.get("/test")
+async def test_endpoint() -> str:
+    return "Aurora Echo is running"
 
 
 @app.get("/metrics")
 async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

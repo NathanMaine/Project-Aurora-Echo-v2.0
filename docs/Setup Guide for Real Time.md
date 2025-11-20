@@ -1,8 +1,8 @@
 # Setup Guide for Real-Time AI Meeting Assistant
 
 ## Hardware Requirements
-- Lenovo ThinkPad P16 Gen 2 or similar with a microphone.
-- GPU (e.g., NVIDIA RTX 5000) enhances performance.
+- Capable laptop or desktop with built-in or external microphone.
+- Discrete GPU (e.g., NVIDIA RTX-series) strongly recommended for accelerated inference.
 
 ## Software Requirements
 - Ubuntu 24.04.3 LTS.

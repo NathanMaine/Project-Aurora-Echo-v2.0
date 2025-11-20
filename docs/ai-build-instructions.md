@@ -8,7 +8,7 @@ verifying, and extending the Real-Time AI Meeting Assistant. Follow the numbered
 checklists in order. Treat unchecked items as TODOs for subsequent iterations.
 
 ## 1. Environment Provisioning
-1. Detect OS/hardware; confirm Windows 11 Pro 64 on Lenovo ThinkPad P16 Gen 2.
+1. Detect OS/hardware; confirm a supported 64-bit OS on a capable workstation or laptop (for example, Windows 11 Pro or Ubuntu 24.04).
 2. Ensure NVIDIA RTX 5000 Ada drivers and CUDA runtime are installed (`nvidia-smi`).
 3. Install Python 3.10/3.11 (64-bit), Git, Visual Studio Build Tools (C++), and
    upgrade `pip`, `setuptools`, `wheel`.

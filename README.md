@@ -20,6 +20,22 @@ status updates and partial transcripts in real time.
   ASR, diarisation, and LLM latency plus queue depth and job totals.
 - **Optional TTS feedback** – summaries can be spoken locally via `pyttsx3`.
 
+## Project Purpose
+Project Aurora Echo was built as a proof-of-concept to explore real-time meeting
+intelligence: audio ingestion, transcription, diarisation, and summarisation in
+one experimental stack. It is not hardened for production workloads, but serves
+as a reference for exploring async orchestration patterns, provider failover,
+and local inference with commodity hardware.
+
+## Recommended Local Setup
+- **Operating system**: 64-bit Windows 11, macOS 13+, or Ubuntu 22.04/24.04
+- **CPU**: Modern 8-core (or better) processor with AVX2 support
+- **Memory**: 16 GB RAM minimum; 32 GB recommended for multitasking
+- **GPU**: NVIDIA RTX-class GPU with 12 GB VRAM for vLLM/Whisper acceleration
+  (CPU-only mode works, but at higher latency)
+- **Storage**: 20 GB free SSD space for virtual environments, models, and logs
+- **Audio**: Reliable microphone input (built-in or USB) for capture tests
+
 ## Repository Layout
 ```
 Project Aurora Echo/
@@ -292,3 +308,13 @@ When adding new code:
 
 ## License
 All rights reserved.
+
+## VS Code Tasks
+Launch common workflows from the command palette (`⇧⌘P` → “Run Task…”):
+- `Aurora: Create & Activate Virtual Env` – sets up `.venv` and installs requirements.
+- `Aurora: Run Local API` – starts `uvicorn app:app` (requires the virtual env).
+- `Aurora: Run vLLM Container` – pulls/starts the vLLM image on port 8001.
+- `Aurora: Compose Stack (with model)` – builds and runs the full Docker stack.
+- `Aurora: Compose Stack Down` – stops the compose services.
+
+Tasks are defined in `.vscode/tasks.json` and open dedicated terminals for easy monitoring.

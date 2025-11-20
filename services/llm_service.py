@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from services.providers.base import LLMProvider
 from services.providers.models import LLMResponseModel
 from services.providers.vllm_provider import VLLMProvider
+from services.providers.ollama_provider import OllamaProvider
 from services.providers.xai_grok_provider import XAIGrokProvider
 from services.providers.openai_provider import OpenAIProvider
 from services.providers.azure_openai_provider import AzureOpenAIProvider
@@ -43,6 +44,9 @@ class LLMService:
         self._vllm_endpoint = os.getenv("VLLM_COMPLETIONS_ENDPOINT", "/v1/chat/completions")
         self._vllm_api_key = os.getenv("VLLM_API_KEY")
 
+        self._ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self._ollama_model_id = os.getenv("OLLAMA_MODEL_ID", "llama3.1:8b")
+
         self._xai_api_key = os.getenv("XAI_API_KEY")
 
         self._openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -71,6 +75,14 @@ class LLMService:
                     model=self._vllm_model_id,
                     api_key=self._vllm_api_key,
                     endpoint=self._vllm_endpoint,
+                    max_retries=self._max_retries,
+                    backoff_seconds=self._backoff_seconds,
+                )
+                self._providers.append(provider)
+            elif name == "ollama":
+                provider = OllamaProvider(
+                    base_url=self._ollama_base_url,
+                    model=self._ollama_model_id,
                     max_retries=self._max_retries,
                     backoff_seconds=self._backoff_seconds,
                 )

@@ -145,7 +145,7 @@ def check_dependencies():
 
     required_packages = [
         'fastapi', 'uvicorn', 'websockets', 'pyaudio', 'numpy',
-        'torch', 'python-dotenv', 'requests', 'pyttsx3'
+        'torch', 'dotenv', 'requests', 'pyttsx3'
     ]
 
     available = 0
