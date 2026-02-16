@@ -27,6 +27,12 @@ RUN apt-get update && \
 
 COPY . /app
 
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --no-create-home appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
 ENV PYTHONUNBUFFERED=1 \
     UVICORN_HOST=0.0.0.0 \
     UVICORN_PORT=8000

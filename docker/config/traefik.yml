@@ -6,7 +6,7 @@ http:
     auth:
       basicAuth:
         users:
-          - "family:$apr1$e2j5Hn9K$skn.pzG0LcKk6.B6B1cNQ/" # password: welcome123
+          - "family:$apr1$e2j5Hn9K$skn.pzG0LcKk6.B6B1cNQ/"
 
   routers:
     api-http:

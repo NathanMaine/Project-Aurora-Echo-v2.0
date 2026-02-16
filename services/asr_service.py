@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import AsyncIterator, Dict, Optional
 
 import numpy as np
@@ -18,16 +20,17 @@ except ImportError:
 
 try:
     from .tensorrt_whisper import WhisperModel as TensorRTWhisperModel
+    TENSORRT_AVAILABLE = True
+except ImportError:
+    TENSORRT_AVAILABLE = False
+    TensorRTWhisperModel = None
+
 try:
     from .providers.nim_asr_provider import NIMASRProvider
     NIM_ASR_AVAILABLE = True
 except ImportError:
     NIM_ASR_AVAILABLE = False
     NIMASRProvider = None
-    TENSORRT_AVAILABLE = True
-except ImportError:
-    TENSORRT_AVAILABLE = False
-    TensorRTWhisperModel = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,43 +40,13 @@ def get_whisper_model(
     device: Optional[str] = None,
     compute_type: Optional[str] = None,
     **kwargs,
-
-
-def get_asr_provider(
-    model_size: str,
-    device: Optional[str] = None,
-    compute_type: Optional[str] = None,
-    **kwargs,
-):
-    """Factory function returning appropriate ASR provider."""
-    import os
-    from pathlib import Path
-    
-    # Check if NIM ASR is enabled via environment
-    nim_asr_base_url = os.getenv("NIM_ASR_BASE_URL")
-    if NIM_ASR_AVAILABLE and nim_asr_base_url:
-        LOGGER.info("Using NIM ASR backend")
-        return NIMASRProvider(
-            base_url=nim_asr_base_url,
-            model=model_size,
-            api_key=os.getenv("NIM_ASR_API_KEY"),
-            endpoint=os.getenv("NIM_ASR_ENDPOINT", "/v1/audio/transcriptions"),
-            max_retries=int(os.getenv("NIM_ASR_MAX_RETRIES", "3")),
-            backoff_seconds=float(os.getenv("NIM_ASR_BACKOFF_SECONDS", "1.0")),
-            timeout=float(os.getenv("NIM_ASR_TIMEOUT", "60.0")),
-        )
-    
-    # Fallback to local Whisper model
-    return get_whisper_model(model_size, device, compute_type, **kwargs)
 ):
     """Factory function returning appropriate Whisper model."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     compute_type = compute_type or ("auto" if device == "cuda" else "float32")
-    
+
     # Check if TensorRT engine exists and CUDA is available
     if TENSORRT_AVAILABLE and device == "cuda":
-        import os
-        from pathlib import Path
         engine_path = f"./models/whisper-{model_size}-{compute_type if compute_type != 'auto' else 'float16'}.plan"
         if Path(engine_path).exists():
             LOGGER.info("Using TensorRT backend")
@@ -83,7 +56,7 @@ def get_asr_provider(
                 device=device,
                 compute_type=compute_type if compute_type != "auto" else "float16",
             )
-    
+
     # Fallback to faster-whisper
     if FASTER_WHISPER_AVAILABLE:
         LOGGER.info("Using faster-whisper backend")
@@ -97,6 +70,31 @@ def get_asr_provider(
         raise RuntimeError(
             "No ASR backend available. Install faster-whisper or TensorRT dependencies."
         )
+
+
+def get_asr_provider(
+    model_size: str,
+    device: Optional[str] = None,
+    compute_type: Optional[str] = None,
+    **kwargs,
+):
+    """Factory function returning appropriate ASR provider."""
+    # Check if NIM ASR is enabled via environment
+    nim_asr_base_url = os.getenv("NIM_ASR_BASE_URL")
+    if NIM_ASR_AVAILABLE and nim_asr_base_url:
+        LOGGER.info("Using NIM ASR backend")
+        return NIMASRProvider(
+            base_url=nim_asr_base_url,
+            model=model_size,
+            api_key=os.getenv("NIM_ASR_API_KEY"),
+            endpoint=os.getenv("NIM_ASR_ENDPOINT", "/v1/audio/transcriptions"),
+            max_retries=int(os.getenv("NIM_ASR_MAX_RETRIES", "3")),
+            backoff_seconds=float(os.getenv("NIM_ASR_BACKOFF_SECONDS", "1.0")),
+            timeout=float(os.getenv("NIM_ASR_TIMEOUT", "60.0")),
+        )
+
+    # Fallback to local Whisper model
+    return get_whisper_model(model_size, device, compute_type, **kwargs)
 
 
 class ASRService:

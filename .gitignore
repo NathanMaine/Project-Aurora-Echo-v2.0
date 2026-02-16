@@ -1,7 +1,7 @@
 # Environment variables
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # Virtual environments
 venv/
@@ -52,7 +52,10 @@ logs/
 
 # Node modules (if any)
 node_modules/
-.env
-
 # Internal planning
 internal_future_plan.md
+
+# Agent / tooling artifacts
+.a0proj/
+create_github_repo.sh
+CLAUDE.md

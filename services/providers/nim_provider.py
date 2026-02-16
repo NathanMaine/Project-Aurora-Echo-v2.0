@@ -2,23 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-import time
 from typing import Any, Dict, List, Optional
 
 import httpx
+from pydantic import ValidationError
 
 from .base import LLMProvider
 from .models import LLMResponseModel
 
 LOGGER = logging.getLogger(__name__)
 
+SYSTEM_PROMPT = (
+    "You are a meticulous meeting assistant. Given a diarised transcript, "
+    "produce JSON with 'summary' (≤120 words) and 'actions' (each with "
+    "'task', 'assignee', 'due')."
+)
+
 
 class NIMProvider(LLMProvider):
     """Provider for NVIDIA NIM inference microservices."""
 
+    name = "nim"
+
     def __init__(
         self,
+        *,
         base_url: str,
         model: str,
         api_key: Optional[str] = None,
@@ -27,100 +38,51 @@ class NIMProvider(LLMProvider):
         backoff_seconds: float = 1.0,
         timeout: float = 60.0,
     ) -> None:
-        super().__init__(max_retries, backoff_seconds)
-        self.base_url = base_url.rstrip('/')
-        self.model = model
-        self.api_key = api_key
-        self.endpoint = endpoint.lstrip('/')
-        self.timeout = timeout
-        self.client = httpx.Client(timeout=timeout)
+        super().__init__(max_retries=max_retries, backoff_seconds=backoff_seconds)
+        self._base_url = base_url.rstrip('/')
+        self._model = model
+        self._api_key = api_key
+        self._endpoint = endpoint.lstrip('/')
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=timeout,
+        )
 
-    def _make_request(
-        self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Make request to NIM endpoint."""
-        url = f"{self.base_url}/{self.endpoint}"
-        headers = {
-            "Content-Type": "application/json",
-        }
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+    async def summarize(self, transcript: str) -> LLMResponseModel:
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
         payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": transcript},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 600,
         }
-        # Add any extra parameters
-        for key, value in kwargs.items():
-            if key not in payload and value is not None:
-                payload[key] = value
 
-        LOGGER.debug("Sending request to NIM at %s", url)
-        response = self.client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        async def _request() -> LLMResponseModel:
+            response = await self._client.post(
+                f"/{self._endpoint}",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
 
-    def generate(
-        self,
-        messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        **kwargs: Any,
-    ) -> LLMResponseModel:
-        """Generate a response using NIM."""
-        for attempt in range(self.max_retries + 1):
-            try:
-                start_time = time.time()
-                data = self._make_request(
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    **kwargs,
-                )
-                latency = time.time() - start_time
+            if "choices" not in data or len(data["choices"]) == 0:
+                raise ValueError("No choices in NIM response")
 
-                # Extract response text
-                if "choices" not in data or len(data["choices"]) == 0:
-                    raise ValueError("No choices in NIM response")
-                choice = data["choices"][0]
-                if "message" not in choice:
-                    raise ValueError("No message in choice")
-                message = choice["message"]
-                content = message.get("content", "")
+            content = data["choices"][0]["message"]["content"]
+            payload_dict = json.loads(content)
+            return LLMResponseModel.parse_obj(payload_dict)
 
-                # Extract usage
-                usage = data.get("usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                total_tokens = usage.get("total_tokens", 0)
+        return await self._run_with_retry(_request)
 
-                return LLMResponseModel(
-                    content=content,
-                    latency=latency,
-                    provider="nim",
-                    model=self.model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    raw_response=data,
-                )
-            except Exception as e:
-                LOGGER.warning(
-                    "Attempt %d/%d failed for NIM provider: %s",
-                    attempt + 1,
-                    self.max_retries + 1,
-                    e,
-                )
-                if attempt == self.max_retries:
-                    raise
-                time.sleep(self.backoff_seconds * (2 ** attempt))
-        raise RuntimeError("Should not reach here")
+    async def close(self) -> None:
+        await self._client.aclose()
 
     def __repr__(self) -> str:
-        return f"NIMProvider(base_url={self.base_url}, model={self.model})"
+        return f"NIMProvider(base_url={self._base_url}, model={self._model})"

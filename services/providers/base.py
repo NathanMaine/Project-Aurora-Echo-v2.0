@@ -1,11 +1,19 @@
-"""Abstract base class for LLM providers."""
+"""Abstract base class for LLM and ASR providers."""
 
 from __future__ import annotations
 
 import abc
-from typing import Optional
+import asyncio
+import json
+import logging
+from typing import Any, Awaitable, Callable, Optional
+
+import httpx
+from pydantic import ValidationError
 
 from services.providers.models import LLMResponseModel
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LLMProvider(abc.ABC):
@@ -32,10 +40,32 @@ class LLMProvider(abc.ABC):
         Should raise an exception on failure so the caller can try the next provider.
         """
 
+    async def _run_with_retry(
+        self,
+        func: Callable[[], Awaitable[LLMResponseModel]],
+    ) -> LLMResponseModel:
+        """Execute *func* with exponential backoff on transient failures."""
+        delay = self._backoff_seconds
+        attempt = 0
+        while True:
+            try:
+                return await func()
+            except (httpx.HTTPError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+                attempt += 1
+                if attempt >= self._max_retries:
+                    LOGGER.exception(
+                        "%s provider failed after %s attempts", self.name, attempt
+                    )
+                    raise
+                LOGGER.warning(
+                    "%s request failed (attempt %s/%s): %s; retrying in %.1fs",
+                    self.name, attempt, self._max_retries, exc, delay,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+
     async def close(self) -> None:
         """Release any resources held by the provider."""
-
-
 
 
 class ASRProvider(abc.ABC):
@@ -60,7 +90,7 @@ class ASRProvider(abc.ABC):
         self,
         audio_data: bytes,
         language: Optional[str] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         """Transcribe audio to text.
 

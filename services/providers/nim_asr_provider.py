@@ -17,8 +17,11 @@ LOGGER = logging.getLogger(__name__)
 class NIMASRProvider(ASRProvider):
     """Provider for NVIDIA NIM ASR inference microservices."""
 
+    name = "nim-asr"
+
     def __init__(
         self,
+        *,
         base_url: str,
         model: str,
         api_key: Optional[str] = None,
@@ -27,46 +30,13 @@ class NIMASRProvider(ASRProvider):
         backoff_seconds: float = 1.0,
         timeout: float = 60.0,
     ) -> None:
-        super().__init__(max_retries, backoff_seconds)
-        self.base_url = base_url.rstrip('/')
-        self.model = model
-        self.api_key = api_key
-        self.endpoint = endpoint.lstrip('/')
-        self.timeout = timeout
-        self.client = httpx.Client(timeout=timeout)
-
-    def _make_request(
-        self,
-        audio_data: bytes,
-        language: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Make request to NIM ASR endpoint."""
-        url = f"{self.base_url}/{self.endpoint}"
-        headers = {
-            "Content-Type": "application/json",
-        }
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        # Encode audio to base64
-        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-        payload = {
-            "model": self.model,
-            "audio": audio_b64,
-            "response_format": "json",
-        }
-        if language:
-            payload["language"] = language
-        # Add any extra parameters
-        for key, value in kwargs.items():
-            if key not in payload and value is not None:
-                payload[key] = value
-
-        LOGGER.debug("Sending ASR request to NIM at %s", url)
-        response = self.client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        super().__init__(max_retries=max_retries, backoff_seconds=backoff_seconds)
+        self._base_url = base_url.rstrip('/')
+        self._model = model
+        self._api_key = api_key
+        self._endpoint = endpoint.lstrip('/')
+        self._timeout = timeout
+        self._client = httpx.Client(timeout=timeout)
 
     def transcribe(
         self,
@@ -75,33 +45,48 @@ class NIMASRProvider(ASRProvider):
         **kwargs: Any,
     ) -> str:
         """Transcribe audio using NIM ASR."""
-        for attempt in range(self.max_retries + 1):
-            try:
-                start_time = time.time()
-                data = self._make_request(
-                    audio_data=audio_data,
-                    language=language,
-                    **kwargs,
-                )
-                latency = time.time() - start_time
+        url = f"{self._base_url}/{self._endpoint}"
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
 
-                # Extract transcription text
+        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "audio": audio_b64,
+            "response_format": "json",
+        }
+        if language:
+            payload["language"] = language
+
+        delay = self._backoff_seconds
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                LOGGER.debug("Sending ASR request to NIM at %s", url)
+                response = self._client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
                 if "text" not in data:
                     raise ValueError("No text in NIM ASR response")
-                transcription = data["text"]
-                LOGGER.debug("NIM ASR transcription completed in %.2f seconds", latency)
-                return transcription
-            except Exception as e:
-                LOGGER.warning(
-                    "Attempt %d/%d failed for NIM ASR provider: %s",
-                    attempt + 1,
-                    self.max_retries + 1,
-                    e,
-                )
-                if attempt == self.max_retries:
+                return data["text"]
+            except Exception as exc:
+                if attempt >= self._max_retries:
+                    LOGGER.exception(
+                        "NIM ASR provider failed after %s attempts", attempt
+                    )
                     raise
-                time.sleep(self.backoff_seconds * (2 ** attempt))
+                LOGGER.warning(
+                    "NIM ASR request failed (attempt %s/%s): %s; retrying in %.1fs",
+                    attempt, self._max_retries, exc, delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+
         raise RuntimeError("Should not reach here")
 
+    async def close(self) -> None:
+        self._client.close()
+
     def __repr__(self) -> str:
-        return f"NIMASRProvider(base_url={self.base_url}, model={self.model})"
+        return f"NIMASRProvider(base_url={self._base_url}, model={self._model})"

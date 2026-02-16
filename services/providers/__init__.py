@@ -8,6 +8,8 @@ from services.providers.openai_provider import OpenAIProvider
 from services.providers.azure_openai_provider import AzureOpenAIProvider
 from services.providers.anthropic_provider import AnthropicClaudeProvider
 from services.providers.gemini_provider import GeminiProvider
+from services.providers.ollama_provider import OllamaProvider
+from services.providers.nim_provider import NIMProvider
 
 __all__ = [
     "LLMProvider",
@@ -19,4 +21,6 @@ __all__ = [
     "AzureOpenAIProvider",
     "AnthropicClaudeProvider",
     "GeminiProvider",
+    "OllamaProvider",
+    "NIMProvider",
 ]

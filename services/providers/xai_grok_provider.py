@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from typing import Optional
 
 import httpx
-from pydantic import ValidationError
 
 from services.providers.base import LLMProvider
 from services.providers.models import LLMResponseModel
@@ -56,27 +53,6 @@ class XAIGrokProvider(LLMProvider):
             return LLMResponseModel.parse_obj(payload_dict)
 
         return await self._run_with_retry(_request)
-
-    async def _run_with_retry(self, func):
-        delay = self.backoff_seconds
-        attempt = 0
-        while True:
-            try:
-                return await func()
-            except (httpx.HTTPError, json.JSONDecodeError, ValidationError) as exc:
-                attempt += 1
-                if attempt >= self.max_retries:
-                    LOGGER.exception("Grok provider failed after %s attempts", attempt)
-                    raise
-                LOGGER.warning(
-                    "Grok request failed (attempt %s/%s): %s; retrying in %.1fs",
-                    attempt,
-                    self.max_retries,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-                delay *= 2
 
     async def close(self) -> None:
         await self._client.aclose()

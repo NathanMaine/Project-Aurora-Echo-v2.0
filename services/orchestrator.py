@@ -37,10 +37,11 @@ class InferenceOrchestrator:
         workers: int = 1,
         backend_name: str = "in-memory",
         batch_size: int = 1,
+        max_queue_size: int = 100,
     ) -> None:
         self._processor = processor
         self._workers_count = max(1, workers)
-        self._queue: asyncio.Queue[Optional[InferenceJob]] = asyncio.Queue()
+        self._queue: asyncio.Queue[Optional[InferenceJob]] = asyncio.Queue(maxsize=max_queue_size)
         self._workers: List[asyncio.Task] = []
         self._running = False
         self._backend_name = backend_name

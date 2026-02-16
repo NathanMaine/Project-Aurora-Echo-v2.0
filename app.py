@@ -28,7 +28,7 @@ try:
     from services import ASRService
 except ImportError:
     ASRService = None
-    print("Warning: ASRService not available - running in limited mode")
+    logging.getLogger(__name__).warning("ASRService not available - running in limited mode")
 from services.audio_buffer import SecureAudioBuffer
 
 load_dotenv()
@@ -51,15 +51,17 @@ tts_engine = None
 async def lifespan(app: FastAPI):
     global asr_service, llm_service, orchestrator
 
-    try:
-        # Try to create ASR service to test if dependencies are available
-        test_asr = ASRService()
-        asr_service = test_asr
-        LOGGER.info("ASR service initialized successfully")
-    except RuntimeError as e:
+    if ASRService is not None:
+        try:
+            asr_service = ASRService()
+            LOGGER.info("ASR service initialized successfully")
+        except Exception as e:
+            asr_service = None
+            LOGGER.warning("ASR service not available: %s", e)
+            LOGGER.warning("Running without speech recognition capabilities")
+    else:
         asr_service = None
-        LOGGER.warning("ASR service not available: %s", e)
-        LOGGER.warning("Running without speech recognition capabilities")
+        LOGGER.warning("ASR module not importable — running without speech recognition")
 
     llm_service = LLMService()
 
@@ -84,9 +86,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Debug: print registered routes
-for route in app.routes:
-    print(f"Route: {route.path} - {type(route).__name__}")
 
 
 def get_diarization_pipeline():
@@ -130,8 +129,10 @@ async def _speak_summary(summary: str) -> None:
 
 
 async def _process_job(job: InferenceJob) -> None:
-    assert asr_service is not None
-    assert llm_service is not None
+    if asr_service is None:
+        raise RuntimeError("ASR service is not initialized")
+    if llm_service is None:
+        raise RuntimeError("LLM service is not initialized")
 
     job_timer = time.monotonic()
     INFERENCE_JOBS_TOTAL.inc()
@@ -188,7 +189,12 @@ async def _process_job(job: InferenceJob) -> None:
     except Exception as exc:  # pragma: no cover - runtime logging only
         INFERENCE_JOB_FAILURES.inc()
         LOGGER.exception("Inference job %s failed", job.job_id)
-        await job.websocket.send_json({"type": "final", "jobId": job.job_id, "error": str(exc)})
+        try:
+            await job.websocket.send_json(
+                {"type": "final", "jobId": job.job_id, "error": "An internal error occurred during processing."}
+            )
+        except Exception:
+            LOGGER.debug("Failed to send error response to client for job %s", job.job_id)
 
 
 def _bytes_to_waveform(audio_bytes: bytes, sample_rate: int) -> torch.Tensor:
@@ -211,7 +217,9 @@ async def _apply_diarization(
     try:
         diar_start = time.monotonic()
         waveform = _bytes_to_waveform(audio_bytes, sample_rate)
-        diarization = pipeline({"waveform": waveform, "sample_rate": MODEL_RATE})
+        diarization = await asyncio.to_thread(
+            pipeline, {"waveform": waveform, "sample_rate": MODEL_RATE}
+        )
         diarized_segments: List[str] = []
         for segment in segments:
             text = segment.get("text", "").strip()
