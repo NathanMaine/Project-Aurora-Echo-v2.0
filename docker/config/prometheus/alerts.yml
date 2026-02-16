@@ -1,0 +1,94 @@
+groups:
+  - name: gpu_alerts
+    rules:
+      - alert: HighGPUTemperature
+        expr: avg by (gpu) (nvidiagpuexporter_dcgm_gpu_temperature) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU temperature is high on {{ $labels.gpu }}"
+          description: "GPU {{ $labels.gpu }} temperature is {{ $value }}°C"
+
+      - alert: HighGPUMemoryUsage
+        expr: avg by (gpu) (nvidiagpuexporter_dcgm_gpu_memory_used_bytes / nvidiagpuexporter_dcgm_gpu_memory_total_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory usage is high on {{ $labels.gpu }}"
+          description: "GPU {{ $labels.gpu }} memory usage is {{ $value }}%"
+
+      - alert: HighGPUUtilization
+        expr: avg by (gpu) (nvidiagpuexporter_dcgm_gpu_utilization) > 95
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU utilization is high on {{ $labels.gpu }}"
+          description: "GPU {{ $labels.gpu }} utilization is {{ $value }}%"
+
+      - alert: GPUPowerLimitExceeded
+        expr: avg by (gpu) (nvidiagpuexporter_dcgm_gpu_power_usage) > 250
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU power usage is high on {{ $labels.gpu }}"
+          description: "GPU {{ $labels.gpu }} power usage is {{ $value }}W"
+
+  - name: application_alerts
+    rules:
+      - alert: HighASRLatency
+        expr: rate(meeting_assistant_asr_latency_seconds_sum[5m]) / rate(meeting_assistant_asr_latency_seconds_count[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ASR latency is high"
+          description: "Average ASR latency is {{ $value }} seconds"
+
+      - alert: HighLLMLatency
+        expr: rate(meeting_assistant_llm_latency_seconds_sum[5m]) / rate(meeting_assistant_llm_latency_seconds_count[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM latency is high"
+          description: "Average LLM latency is {{ $value }} seconds"
+
+      - alert: HighInferenceErrorRate
+        expr: rate(meeting_assistant_inference_job_failures_total[5m]) / rate(meeting_assistant_inference_jobs_total[5m]) * 100 > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Inference error rate is high"
+          description: "Error rate is {{ $value }}%"
+
+      - alert: HighQueueDepth
+        expr: meeting_assistant_inference_queue_depth > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inference queue depth is high"
+          description: "Queue depth is {{ $value }} jobs"
+
+      - alert: TensorRTFallbackRateHigh
+        expr: rate(meeting_assistant_tensorrt_fallbacks_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TensorRT fallback rate is high"
+          description: "TensorRT fallbacks are occurring at {{ $value }} per second"
+
+      - alert: ServiceDown
+        expr: up{job="meeting-assistant"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.instance }} is down"
+          description: "The meeting assistant service is not responding"

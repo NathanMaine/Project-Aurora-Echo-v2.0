@@ -17,6 +17,7 @@ from services.providers.openai_provider import OpenAIProvider
 from services.providers.azure_openai_provider import AzureOpenAIProvider
 from services.providers.anthropic_provider import AnthropicClaudeProvider
 from services.providers.gemini_provider import GeminiProvider
+from services.providers.nim_provider import NIMProvider
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ class LLMService:
         self._anthropic_model_id = os.getenv("ANTHROPIC_MODEL_ID", "claude-3-sonnet-20240229")
 
         self._gemini_api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
+        self._nim_base_url = os.getenv("NIM_BASE_URL", "http://localhost:8002")
+        self._nim_model_id = os.getenv("NIM_MODEL_ID", "meta-llama-3-8b-instruct")
+        self._nim_endpoint = os.getenv("NIM_COMPLETIONS_ENDPOINT", "/v1/chat/completions")
+        self._nim_api_key = os.getenv("NIM_API_KEY")
         self._gemini_model_id = os.getenv("GOOGLE_GEMINI_MODEL_ID", "gemini-1.5-pro-latest")
 
         self._providers: List[LLMProvider] = []
@@ -142,6 +147,19 @@ class LLMService:
                 provider = GeminiProvider(
                     api_key=self._gemini_api_key,
                     model=self._gemini_model_id,
+                    max_retries=self._max_retries,
+                    backoff_seconds=self._backoff_seconds,
+                )
+                self._providers.append(provider)
+            elif name == "nim":
+                if not self._nim_base_url:
+                    LOGGER.warning("Skipping NIM provider because NIM_BASE_URL is not set")
+                    continue
+                provider = NIMProvider(
+                    base_url=self._nim_base_url,
+                    model=self._nim_model_id,
+                    api_key=self._nim_api_key,
+                    endpoint=self._nim_endpoint,
                     max_retries=self._max_retries,
                     backoff_seconds=self._backoff_seconds,
                 )

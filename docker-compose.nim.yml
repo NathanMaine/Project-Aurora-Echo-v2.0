@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  nim-llm:
+    image: nvcr.io/nvidia/nim/nim_llm:latest
+    container_name: meeting-assistant-nim-llm
+    environment:
+      - NIM_MODEL=meta-llama-3-8b-instruct
+      - NIM_API_KEY=${NIM_API_KEY:-}
+      - NIM_PORT=8002
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./models/nim/llm:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    networks:
+      - meeting-net
+    profiles: [nim]
+
+  nim-asr:
+    image: nvcr.io/nvidia/nim/nim_asr:latest
+    container_name: meeting-assistant-nim-asr
+    environment:
+      - NIM_MODEL=whisper-large-v3
+      - NIM_API_KEY=${NIM_ASR_API_KEY:-}
+      - NIM_PORT=8003
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./models/nim/asr:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    networks:
+      - meeting-net
+    profiles: [nim]
+
+networks:
+  meeting-net:
+    external: true
+    name: project_5_project-aurora-echo_meeting-net

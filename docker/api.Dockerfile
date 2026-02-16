@@ -17,6 +17,14 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
+# Install TensorRT runtime if needed (pip package includes runtime)
+# Additional system packages for TensorRT
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libnvinfer9 \
+        libnvinfer-plugin9 \
+        && rm -rf /var/lib/apt/lists/*
+
 COPY . /app
 
 ENV PYTHONUNBUFFERED=1 \

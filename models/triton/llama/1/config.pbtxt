@@ -1,0 +1,45 @@
+name: "llama"
+backend: "vllm"
+max_batch_size: 8
+
+input [
+  {
+    name: "prompt"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+
+output [
+  {
+    name: "text"
+    data_type: TYPE_STRING
+    dims: [ -1 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+parameters [
+  {
+    key: "model_id"
+    value: { string_value: "meta-llama-3-8b-instruct" }
+  },
+  {
+    key: "max_tokens"
+    value: { string_value: "1024" }
+  },
+  {
+    key: "temperature"
+    value: { string_value: "0.7" }
+  },
+  {
+    key: "top_p"
+    value: { string_value: "0.9" }
+  }
+]

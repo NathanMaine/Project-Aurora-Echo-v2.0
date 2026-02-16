@@ -1,0 +1,90 @@
+version: "3.9"
+
+services:
+  reverse-proxy:
+    image: traefik:v3.0
+    container_name: meeting-assistant-proxy
+    command:
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--providers.file.watch=true"
+      - "--api.insecure=false"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/config/traefik.yml:/etc/traefik/dynamic.yml:ro
+      - ./docker/certs:/certs:ro
+    depends_on:
+      - api
+    networks:
+      - meeting-net
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: meeting-assistant-api
+    env_file:
+      - .env.docker
+    environment:
+      - UVICORN_HOST=0.0.0.0
+      - UVICORN_PORT=8000
+      - ORCHESTRATOR_BACKEND=docker
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    networks:
+      - meeting-net
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: meeting-assistant-vllm
+    command: ["--model", "meta-llama-3-8b-instruct", "--port", "8001"]
+    environment:
+      - VLLM_MODEL_ID=meta-llama-3-8b-instruct
+    ports:
+      - "8001:8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    networks:
+      - meeting-net
+    profiles: [model]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: meeting-assistant-prometheus
+    volumes:
+      - ./docker/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - meeting-net
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: meeting-assistant-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+    ports:
+      - "3000:3000"
+    networks:
+      - meeting-net
+    depends_on:
+      - prometheus
+
+networks:
+  meeting-net:
+    driver: bridge
+

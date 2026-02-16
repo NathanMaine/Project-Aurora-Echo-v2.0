@@ -43,14 +43,39 @@ services:
     networks:
       - meeting-net
 
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: meeting-assistant-vllm
-    command: ["--model", "meta-llama-3-8b-instruct", "--port", "8001"]
-    environment:
-      - VLLM_MODEL_ID=meta-llama-3-8b-instruct
+  # vllm service replaced by Triton Inference Server with vLLM backend
+  # vllm:
+  #   image: vllm/vllm-openai:latest
+  #   container_name: meeting-assistant-vllm
+  #   command: ["--model", "meta-llama-3-8b-instruct", "--port", "8001"]
+  #   environment:
+  #     - VLLM_MODEL_ID=meta-llama-3-8b-instruct
+  #   ports:
+  #     - "8001:8001"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             capabilities: ["gpu"]
+  #   networks:
+  #     - meeting-net
+  #   profiles: [model]
+
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.09-py3
+    container_name: meeting-assistant-triton
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --model-control-mode=explicit
+      - --load-model=llama
     ports:
-      - "8001:8001"
+      - "8000:8000"  # HTTP
+      - "8001:8001"  # gRPC
+      - "8002:8002"  # metrics
+    volumes:
+      - ./models/triton:/models
     deploy:
       resources:
         reservations:
@@ -84,7 +109,23 @@ services:
     depends_on:
       - prometheus
 
+  dcgm-exporter:
+    image: nvidia/dcgm-exporter:latest
+    container_name: meeting-assistant-dcgm-exporter
+    ports:
+      - "9400:9400"
+    volumes:
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    networks:
+      - meeting-net
+
 networks:
   meeting-net:
     driver: bridge
-

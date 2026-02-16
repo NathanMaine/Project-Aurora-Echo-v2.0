@@ -17,3 +17,5 @@ torchaudio
 cryptography
 prometheus-client
 pydantic
+tensorrt
+torch-tensorrt

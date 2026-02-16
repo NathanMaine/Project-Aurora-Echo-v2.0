@@ -35,3 +35,37 @@ class LLMProvider(abc.ABC):
     async def close(self) -> None:
         """Release any resources held by the provider."""
 
+
+
+
+class ASRProvider(abc.ABC):
+    """Interface for ASR backends."""
+
+    name: str
+
+    def __init__(self, *, max_retries: int = 3, backoff_seconds: float = 1.0) -> None:
+        self._max_retries = max_retries
+        self._backoff_seconds = backoff_seconds
+
+    @property
+    def max_retries(self) -> int:
+        return self._max_retries
+
+    @property
+    def backoff_seconds(self) -> float:
+        return self._backoff_seconds
+
+    @abc.abstractmethod
+    def transcribe(
+        self,
+        audio_data: bytes,
+        language: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """Transcribe audio to text.
+
+        Should raise an exception on failure so the caller can try the next provider.
+        """
+
+    async def close(self) -> None:
+        """Release any resources held by the provider."""
