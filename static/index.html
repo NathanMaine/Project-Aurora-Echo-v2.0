@@ -12,7 +12,6 @@
             padding: 24px;
         }
         button {
-            background-color: #4CAF50;
             border: none;
             color: white;
             padding: 14px 28px;
@@ -20,19 +19,49 @@
             border-radius: 6px;
             cursor: pointer;
         }
-        button:disabled {
+        #recordButton {
+            background-color: #4CAF50;
+        }
+        #recordButton.recording {
+            background-color: #e53935;
+            animation: pulse 1.5s infinite;
+        }
+        #recordButton:disabled {
             background-color: #9ac69b;
             cursor: not-allowed;
+            animation: none;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
         }
         #status {
             margin-top: 12px;
             font-style: italic;
             color: #444;
         }
+        #timer {
+            margin-top: 6px;
+            font-family: monospace;
+            font-size: 18px;
+            color: #333;
+        }
         textarea {
             width: 100%;
             min-height: 160px;
             margin-top: 12px;
+        }
+        #transcription {
+            white-space: pre-wrap;
+            min-height: 80px;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 12px;
+            margin-top: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+            max-height: 300px;
+            overflow-y: auto;
         }
         table {
             width: 100%;
@@ -50,12 +79,13 @@
 </head>
 <body>
     <h1>Project Aurora Echo</h1>
-    <p>Capture a five-second snippet, transcribe it in real time, and receive a structured summary with action items.</p>
-    <button id="recordButton">Record &amp; Analyze</button>
+    <p>Continuous meeting capture — click <strong>Start Meeting</strong> to begin recording, transcribing, and summarising in real time.</p>
+    <button id="recordButton">Start Meeting</button>
+    <div id="timer"></div>
     <div id="status">Status: idle</div>
 
     <h2>Live Transcript</h2>
-    <p id="transcription"></p>
+    <div id="transcription"></div>
 
     <h2>Summary</h2>
     <textarea id="summary" readonly></textarea>
@@ -75,21 +105,46 @@
     <script>
         const recordButton = document.getElementById('recordButton');
         const statusElement = document.getElementById('status');
+        const timerElement = document.getElementById('timer');
         const transcriptionElement = document.getElementById('transcription');
         const summaryElement = document.getElementById('summary');
         const actionsBody = document.getElementById('actionsBody');
 
         const TARGET_SAMPLE_RATE = 16000;
-        const RECORDING_DURATION_MS = 5000;
 
         let ws;
         let audioContext;
         let processorNode;
         let sourceNode;
-        let recordingTimeout;
+        let mediaStream;
+        let isRecording = false;
+        let timerInterval;
+        let recordingStartTime;
 
         function updateStatus(message) {
             statusElement.textContent = `Status: ${message}`;
+        }
+
+        function formatTime(ms) {
+            const totalSec = Math.floor(ms / 1000);
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        }
+
+        function startTimer() {
+            recordingStartTime = Date.now();
+            timerElement.textContent = '00:00';
+            timerInterval = setInterval(() => {
+                timerElement.textContent = formatTime(Date.now() - recordingStartTime);
+            }, 1000);
+        }
+
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
         }
 
         function ensureWebSocket() {
@@ -99,7 +154,12 @@
             ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
             ws.binaryType = 'arraybuffer';
             ws.onopen = () => updateStatus('connected');
-            ws.onclose = () => updateStatus('disconnected');
+            ws.onclose = () => {
+                updateStatus('disconnected');
+                if (isRecording) {
+                    stopRecording();
+                }
+            };
             ws.onerror = (err) => console.error('WebSocket error', err);
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
@@ -107,21 +167,21 @@
                     updateStatus(data.status || 'processing');
                 } else if (data.type === 'partial_transcript') {
                     transcriptionElement.textContent += `${data.text}\n`;
+                    transcriptionElement.scrollTop = transcriptionElement.scrollHeight;
+                } else if (data.type === 'chunk_summary') {
+                    // Periodic summary update during continuous recording
+                    summaryElement.value = data.summary || '';
+                    mergeActions(data.actions || []);
                 } else if (data.type === 'final') {
                     if (data.error) {
                         alert(data.error);
                     } else {
                         summaryElement.value = data.summary || '';
-                        actionsBody.innerHTML = '';
-                        (data.actions || []).forEach((action) => {
-                            const row = actionsBody.insertRow();
-                            row.insertCell(0).textContent = action.task || '';
-                            row.insertCell(1).textContent = action.assignee || '';
-                            row.insertCell(2).textContent = action.due || '';
-                        });
+                        mergeActions(data.actions || []);
                     }
                     recordButton.disabled = false;
-                    recordButton.textContent = 'Record & Analyze';
+                    recordButton.textContent = 'Start Meeting';
+                    recordButton.classList.remove('recording');
                     if (!data.error) {
                         updateStatus('complete');
                     }
@@ -154,15 +214,27 @@
             actionsBody.innerHTML = '';
         }
 
+        function mergeActions(actions) {
+            // Replace all actions with the latest set from the server
+            actionsBody.innerHTML = '';
+            actions.forEach((action) => {
+                const row = actionsBody.insertRow();
+                row.insertCell(0).textContent = action.task || '';
+                row.insertCell(1).textContent = action.assignee || '';
+                row.insertCell(2).textContent = action.due || '';
+            });
+        }
+
         async function startRecording() {
             const socket = ensureWebSocket();
             clearResults();
-            recordButton.disabled = true;
-            recordButton.textContent = 'Recording...';
+            isRecording = true;
+            recordButton.textContent = 'Stop Meeting';
+            recordButton.classList.add('recording');
             updateStatus('requesting microphone');
 
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
+                mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         channelCount: 1,
                         echoCancellation: true,
@@ -173,13 +245,16 @@
                 await waitForSocketOpen(socket);
 
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                sourceNode = audioContext.createMediaStreamSource(stream);
+                sourceNode = audioContext.createMediaStreamSource(mediaStream);
                 processorNode = audioContext.createScriptProcessor(4096, 1, 1);
 
                 socket.send(JSON.stringify({ type: 'start', sampleRate: TARGET_SAMPLE_RATE }));
                 updateStatus('recording');
+                startTimer();
 
                 processorNode.onaudioprocess = (event) => {
+                    if (!isRecording) return;
+
                     const inputData = event.inputBuffer.getChannelData(0);
                     let pcmData;
 
@@ -213,44 +288,49 @@
                 sourceNode.connect(processorNode);
                 processorNode.connect(audioContext.destination);
 
-                recordingTimeout = setTimeout(() => stopRecording(stream), RECORDING_DURATION_MS);
             } catch (error) {
                 console.error('Microphone error', error);
                 alert('Unable to access the microphone. Please check your permissions.');
-                recordButton.disabled = false;
-                recordButton.textContent = 'Record & Analyze';
+                isRecording = false;
+                recordButton.textContent = 'Start Meeting';
+                recordButton.classList.remove('recording');
                 updateStatus('error');
             }
         }
 
-        function stopRecording(stream) {
-            if (recordingTimeout) {
-                clearTimeout(recordingTimeout);
-                recordingTimeout = null;
-            }
+        function stopRecording() {
+            isRecording = false;
+            stopTimer();
+
             if (processorNode && sourceNode) {
                 processorNode.disconnect();
                 sourceNode.disconnect();
             }
             processorNode = null;
             sourceNode = null;
-            if (stream) {
-                stream.getTracks().forEach((track) => track.stop());
+            if (mediaStream) {
+                mediaStream.getTracks().forEach((track) => track.stop());
+                mediaStream = null;
             }
             if (audioContext) {
                 audioContext.close();
                 audioContext = null;
             }
 
-            recordButton.textContent = 'Processing...';
-            updateStatus('uploading');
+            recordButton.disabled = true;
+            recordButton.textContent = 'Finalising...';
+            updateStatus('finalising');
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'stop' }));
             }
         }
 
         recordButton.addEventListener('click', () => {
-            startRecording();
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
         });
     </script>
 </body>

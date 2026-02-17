@@ -141,7 +141,6 @@ class ASRService:
                     vad_filter=True,
                     chunk_length=15,
                     temperature=[0.0],
-                    sample_rate=sample_rate,
                 )
                 LOGGER.debug(
                     "ASR info: language=%s, duration=%.2fs",

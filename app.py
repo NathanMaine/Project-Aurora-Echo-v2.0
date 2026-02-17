@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -40,11 +41,28 @@ MODEL_RATE = 16000
 AUDIO_ENCRYPTION_KEY = os.getenv("AUDIO_ENCRYPTION_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+# Continuous recording settings
+CHUNK_INTERVAL = int(os.getenv("CHUNK_INTERVAL", "30"))
+SUMMARIZE_EVERY_N_CHUNKS = int(os.getenv("SUMMARIZE_EVERY_N_CHUNKS", "2"))
+
 asr_service: Optional["ASRService"] = None
 llm_service: Optional[LLMService] = None
 orchestrator: Optional[InferenceOrchestrator] = None
 diarization_pipeline = None
 tts_engine = None
+
+
+@dataclass
+class MeetingSession:
+    """Per-WebSocket session state for continuous recording."""
+    buffer: SecureAudioBuffer
+    sample_rate: int = MODEL_RATE
+    running_transcript: str = ""
+    last_summary: str = ""
+    all_actions: List[Dict[str, str]] = field(default_factory=list)
+    chunk_count: int = 0
+    last_chunk_offset: int = 0  # chunk index in buffer
+    periodic_task: Optional[asyncio.Task] = None
 
 
 @asynccontextmanager
@@ -53,7 +71,10 @@ async def lifespan(app: FastAPI):
 
     if ASRService is not None:
         try:
-            asr_service = ASRService()
+            asr_service = ASRService(
+                model_size=os.getenv("WHISPER_MODEL_SIZE", "medium"),
+                device=os.getenv("WHISPER_DEVICE") or None,
+            )
             LOGGER.info("ASR service initialized successfully")
         except Exception as e:
             asr_service = None
@@ -86,6 +107,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
+@app.get("/")
+async def index() -> HTMLResponse:
+    with open("static/index.html", "r") as f:
+        return HTMLResponse(content=f.read())
 
 
 def get_diarization_pipeline():
@@ -126,6 +152,108 @@ async def _speak_summary(summary: str) -> None:
         engine.runAndWait()
 
     await asyncio.to_thread(_run)
+
+
+async def _process_chunk(session: MeetingSession, websocket: WebSocket) -> None:
+    """Process new audio in the session buffer since last chunk."""
+    if asr_service is None or llm_service is None:
+        return
+
+    current_chunks = session.buffer.chunk_count
+    if current_chunks <= session.last_chunk_offset:
+        LOGGER.debug("No new audio chunks since last processing")
+        return
+
+    audio_bytes = session.buffer.snapshot(session.last_chunk_offset)
+    session.last_chunk_offset = current_chunks
+
+    if not audio_bytes:
+        return
+
+    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+    asr_start = time.monotonic()
+    chunk_parts: List[str] = []
+
+    async for segment in asr_service.stream_transcription(audio_np, session.sample_rate):
+        text = segment.get("text", "").strip()
+        if text:
+            chunk_parts.append(text)
+            try:
+                await websocket.send_json({
+                    "type": "partial_transcript",
+                    "start": segment.get("start"),
+                    "end": segment.get("end"),
+                    "text": text,
+                })
+            except Exception:
+                return  # client disconnected
+
+    ASR_LATENCY.observe(time.monotonic() - asr_start)
+    chunk_text = " ".join(chunk_parts).strip()
+    if not chunk_text:
+        LOGGER.debug("Chunk %d had no speech", session.chunk_count)
+        return
+
+    session.running_transcript += (" " + chunk_text) if session.running_transcript else chunk_text
+    session.chunk_count += 1
+    LOGGER.info("Chunk %d transcribed: %d words", session.chunk_count, len(chunk_text.split()))
+
+    # Summarise every N chunks
+    if session.chunk_count % SUMMARIZE_EVERY_N_CHUNKS == 0:
+        await _incremental_summarise(session, websocket)
+
+
+async def _incremental_summarise(session: MeetingSession, websocket: WebSocket) -> None:
+    """Run LLM summarisation on the accumulated transcript."""
+    if llm_service is None:
+        return
+
+    try:
+        await websocket.send_json({"type": "status", "status": "summarising"})
+    except Exception:
+        return
+
+    llm_start = time.monotonic()
+    llm_payload = await llm_service.summarize_meeting(session.running_transcript)
+    LLM_LATENCY.observe(time.monotonic() - llm_start)
+
+    if llm_payload is None:
+        LOGGER.warning("LLM summarisation failed for chunk %d", session.chunk_count)
+        try:
+            await websocket.send_json({"type": "status", "status": "recording"})
+        except Exception:
+            pass
+        return
+
+    session.last_summary = llm_payload.get("summary", "")
+    session.all_actions = llm_payload.get("actions", [])
+
+    try:
+        await websocket.send_json({
+            "type": "chunk_summary",
+            "summary": session.last_summary,
+            "actions": session.all_actions,
+        })
+        await websocket.send_json({"type": "status", "status": "recording"})
+    except Exception:
+        pass
+
+    LOGGER.info("Chunk summary sent (chunk %d, transcript %d chars)",
+                session.chunk_count, len(session.running_transcript))
+
+
+async def _periodic_processor(session: MeetingSession, websocket: WebSocket) -> None:
+    """Background task that processes audio chunks at regular intervals."""
+    LOGGER.info("Periodic processor started (interval=%ds, summarise_every=%d)",
+                CHUNK_INTERVAL, SUMMARIZE_EVERY_N_CHUNKS)
+    try:
+        while True:
+            await asyncio.sleep(CHUNK_INTERVAL)
+            LOGGER.debug("Periodic processor firing")
+            await _process_chunk(session, websocket)
+    except asyncio.CancelledError:
+        LOGGER.info("Periodic processor cancelled")
 
 
 async def _process_job(job: InferenceJob) -> None:
@@ -251,8 +379,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     LOGGER.info("WebSocket connection accepted")
     await websocket.accept()
-    buffer = SecureAudioBuffer(encryption_key=AUDIO_ENCRYPTION_KEY)
-    current_sample_rate = MODEL_RATE
+    session: Optional[MeetingSession] = None
 
     try:
         while True:
@@ -271,26 +398,82 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 event_type = payload.get("type")
                 if event_type == "start":
-                    buffer.reset()
-                    current_sample_rate = int(payload.get("sampleRate") or MODEL_RATE)
+                    # Cancel any leftover periodic task from a previous session
+                    if session and session.periodic_task:
+                        session.periodic_task.cancel()
+
+                    session = MeetingSession(
+                        buffer=SecureAudioBuffer(encryption_key=AUDIO_ENCRYPTION_KEY),
+                        sample_rate=int(payload.get("sampleRate") or MODEL_RATE),
+                    )
+                    # Start the periodic chunk processor
+                    session.periodic_task = asyncio.create_task(
+                        _periodic_processor(session, websocket)
+                    )
                     await websocket.send_json({"type": "status", "status": "recording"})
+                    LOGGER.info("Meeting session started (chunk_interval=%ds)", CHUNK_INTERVAL)
+
                 elif event_type == "stop":
-                    audio_bytes = buffer.to_bytes()
-                    if not audio_bytes:
-                        await websocket.send_json({"type": "final", "error": "No audio captured."})
+                    if session is None:
+                        await websocket.send_json({"type": "final", "error": "No active session."})
                         continue
-                    await websocket.send_json({"type": "status", "status": "queued"})
-                    job_id = await orchestrator.enqueue(websocket, audio_bytes, current_sample_rate)
-                    await websocket.send_json({"type": "status", "status": "queued", "jobId": job_id})
+
+                    # Stop periodic processing
+                    if session.periodic_task:
+                        session.periodic_task.cancel()
+                        try:
+                            await session.periodic_task
+                        except asyncio.CancelledError:
+                            pass
+                        session.periodic_task = None
+
+                    await websocket.send_json({"type": "status", "status": "finalising"})
+
+                    # Process any remaining audio since last chunk
+                    await _process_chunk(session, websocket)
+
+                    # Final summarisation if we have transcript
+                    if session.running_transcript:
+                        await _incremental_summarise(session, websocket)
+
+                    # Send final result
+                    await websocket.send_json({
+                        "type": "final",
+                        "transcription": session.running_transcript,
+                        "summary": session.last_summary,
+                        "actions": session.all_actions,
+                    })
+                    LOGGER.info("Meeting session ended (%d chunks, %d chars transcript)",
+                                session.chunk_count, len(session.running_transcript))
+                    session = None
+
                 else:
                     LOGGER.debug("Unknown event type received: %s", event_type)
 
             if "bytes" in message and message["bytes"] is not None:
-                buffer.append(message["bytes"])
+                if session:
+                    try:
+                        session.buffer.append(message["bytes"])
+                    except MemoryError:
+                        LOGGER.warning("Audio buffer limit reached, stopping session")
+                        if session.periodic_task:
+                            session.periodic_task.cancel()
+                        await websocket.send_json({
+                            "type": "final",
+                            "error": "Audio buffer limit reached. Recording stopped.",
+                            "transcription": session.running_transcript,
+                            "summary": session.last_summary,
+                            "actions": session.all_actions,
+                        })
+                        session = None
     except WebSocketDisconnect:
         LOGGER.info("WebSocket disconnected")
+        if session and session.periodic_task:
+            session.periodic_task.cancel()
     except Exception as exc:  # pragma: no cover - runtime logging only
         LOGGER.exception("WebSocket error: %s", exc)
+        if session and session.periodic_task:
+            session.periodic_task.cancel()
         await websocket.close(code=1011)
 
 

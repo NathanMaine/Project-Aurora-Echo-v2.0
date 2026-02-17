@@ -59,3 +59,9 @@ internal_future_plan.md
 .a0proj/
 create_github_repo.sh
 CLAUDE.md
+.ralph/
+.ralphrc
+
+# Handoff archives
+aurora-echo-handoff/
+aurora-echo-handoff.zip

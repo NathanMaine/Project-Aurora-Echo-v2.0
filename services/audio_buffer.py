@@ -43,17 +43,33 @@ class SecureAudioBuffer:
         self._chunks.clear()
         self._total_bytes = 0
 
-    def to_bytes(self) -> bytes:
-        if not self._chunks:
+    @property
+    def chunk_count(self) -> int:
+        """Number of chunks currently held."""
+        return len(self._chunks)
+
+    def snapshot(self, from_chunk: int = 0) -> bytes:
+        """Return audio bytes from *from_chunk* onwards without clearing.
+
+        This allows periodic processing to grab new audio since the last
+        snapshot while the buffer continues to accumulate.
+        """
+        if from_chunk >= len(self._chunks):
             return b""
+        sliced = self._chunks[from_chunk:]
         if not self._fernet:
-            return b"".join(self._chunks)
+            return b"".join(sliced)
         decrypted = []
-        for chunk in self._chunks:
+        for chunk in sliced:
             try:
                 decrypted.append(self._fernet.decrypt(chunk))
             except InvalidToken as exc:
                 LOGGER.error("Failed to decrypt audio chunk: %s", exc)
                 raise
         return b"".join(decrypted)
+
+    def to_bytes(self) -> bytes:
+        if not self._chunks:
+            return b""
+        return self.snapshot(0)
 
