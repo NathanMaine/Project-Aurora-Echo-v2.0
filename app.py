@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
     LOGGER.info("Aurora Echo shutdown complete")
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

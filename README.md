@@ -180,7 +180,7 @@ With NVIDIA GPU acceleration:
 
 ## Version History
 
-- **2.0.1** (Feb 2026) — Bind address changed from `0.0.0.0` to `127.0.0.1`. The server no longer listens on all network interfaces, preventing other devices on the local network from reaching the WebSocket and `/metrics` endpoints. Use a reverse proxy (Traefik, nginx) for intentional LAN or public exposure.
+- **2.0.1** (Feb 2026) — Security hardening: bind address changed from `0.0.0.0` to `127.0.0.1` (localhost only). `/docs` and `/redoc` endpoints disabled. Use a reverse proxy for intentional LAN exposure.
 - **2.0** — NVIDIA DCGM, TensorRT, Triton, NIM integrations. 8 LLM providers with centralized retry. Hardened security (non-root container, encrypted buffers, no leaked secrets). Enhanced observability.
 - **1.0** — Initial proof-of-concept with faster-whisper, vLLM, basic observability.
 
