@@ -1,0 +1,31 @@
+# Aurora Echo Demo — lightweight deps (no TensorRT, no torch-tensorrt)
+# Works on any machine with an NVIDIA GPU (CUDA) or CPU-only
+
+# Core framework
+fastapi
+uvicorn[standard]
+websockets
+httpx
+python-dotenv
+jinja2
+cryptography
+prometheus-client
+pydantic
+
+# ASR (speech-to-text) — faster-whisper is lightweight and fast
+faster-whisper
+numpy
+torch
+torchaudio
+
+# Optional: speaker diarization (adds ~2GB download on first run)
+# Uncomment if you set HF_TOKEN in .env
+# pyannote.audio
+
+# Optional: text-to-speech
+# pyttsx3
+
+# Optional: microphone input (requires system PortAudio library)
+# Linux: sudo apt install portaudio19-dev
+# Mac: brew install portaudio
+# pyaudio==0.2.14
