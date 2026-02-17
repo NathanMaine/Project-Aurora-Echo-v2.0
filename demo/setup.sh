@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Aurora Echo Demo — One-shot setup for P50 / OpenRouter
+# Aurora Echo Demo — One-shot setup
 # =============================================================================
 # Usage:
 #   cd demo
